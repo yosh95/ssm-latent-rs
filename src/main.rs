@@ -1,8 +1,9 @@
 use burn::backend::{ndarray::NdArrayDevice, Autodiff, NdArray};
 use burn::module::AutodiffModule;
-use burn::optim::{GradientsParams, Optimizer, SgdConfig};
-use burn::tensor::{Tensor, TensorData};
-use mamba_rs::model::{ComplexTensor, MambaBlock, MambaConfig};
+use burn::optim::{GradientsParams, Optimizer, AdamConfig};
+use burn::tensor::Tensor;
+use mamba_jepa_rs::model::MambaConfig;
+use mamba_jepa_rs::jepa::JepaWorldModel;
 
 type MyBackend = NdArray<f32>;
 type MyAutodiffBackend = Autodiff<MyBackend>;
@@ -10,102 +11,97 @@ type MyAutodiffBackend = Autodiff<MyBackend>;
 fn main() {
     let device = NdArrayDevice::default();
 
-    let d_model = 64;
-    let seq_len = 32;
-    let d_inner = 64;
-    let d_state = 16;
-    let lr = 0.001;
-    let epochs = 50;
-
+    // 1. Model Configuration
+    // Using Mamba's d_state as the "memory" of the world state.
     let config = MambaConfig {
-        d_model,
-        d_state,
+        d_model: 32,      // Dimension of the latent space
+        d_state: 16,      // Dimension of the Mamba SSM state
         d_conv: 3,
         expand: 1,
     };
+    let input_dim = 2;    // Observation: [x, y] coordinates
+    let action_dim = 2;   // Action: [vx, vy] velocity
+    let seq_len = 20;
+    let epochs = 200;
 
-    let mut model = MambaBlock::<MyAutodiffBackend>::new(&config, &device);
+    let mut model = JepaWorldModel::<MyAutodiffBackend>::new(&config, input_dim, action_dim, &device);
+    let mut optim = AdamConfig::new().init::<MyAutodiffBackend, JepaWorldModel<MyAutodiffBackend>>();
 
-    println!("Starting Training Loop (Associative Scan)...");
-
-    let mut u_data = vec![0.0f32; seq_len * d_inner];
-    for t in 0..seq_len {
-        let val = (t as f32 * 0.5).sin();
-        for d in 0..d_inner {
-            u_data[t * d_inner + d] = val;
-        }
-    }
-
-    let u = Tensor::<MyAutodiffBackend, 3>::from_data(
-        TensorData::new(u_data, [1, seq_len, d_inner]),
-        &device,
-    );
-    let target = u.clone();
-
-    let delta =
-        Tensor::<MyAutodiffBackend, 3>::zeros([1, seq_len, d_inner], &device).add_scalar(0.1);
-    let b_re =
-        Tensor::<MyAutodiffBackend, 3>::zeros([1, seq_len, d_state], &device).add_scalar(0.1);
-    let b_im = Tensor::<MyAutodiffBackend, 3>::zeros([1, seq_len, d_state], &device);
-    let c_re =
-        Tensor::<MyAutodiffBackend, 3>::zeros([1, seq_len, d_state], &device).add_scalar(0.1);
-    let c_im = Tensor::<MyAutodiffBackend, 3>::zeros([1, seq_len, d_state], &device);
-
-    let mut optim = SgdConfig::new().init::<MyAutodiffBackend, MambaBlock<MyAutodiffBackend>>();
-
+    println!("==========================================================");
+    println!(" JEPA World Model with Mamba & SIGReg (arXiv:2603.19312)");
+    println!("==========================================================");
+    println!("Phase 1: Starting latent space learning of circular motion...");
+    
+    // Generate sample circular motion data
     for epoch in 1..=epochs {
-        // Fast forward using parallel scan. Internal states h_re, h_im are also available.
-        let (y, _h_re, _h_im) = model.selective_scan(
-            u.clone(),
-            delta.clone(),
-            b_re.clone(),
-            b_im.clone(),
-            c_re.clone(),
-            c_im.clone(),
+        let mut obs_vec = Vec::new();
+        let mut act_vec = Vec::new();
+        for t in 0..seq_len {
+            let angle = (t as f32) * 0.5;
+            obs_vec.extend_from_slice(&[angle.cos(), angle.sin()]);
+            act_vec.extend_from_slice(&[-(angle.sin()), angle.cos()]); // Tangential velocity
+        }
+
+        let obs_data = Tensor::<MyAutodiffBackend, 3>::from_data(
+            burn::tensor::TensorData::new(obs_vec, [1, seq_len, input_dim]), &device
+        );
+        let action_data = Tensor::<MyAutodiffBackend, 3>::from_data(
+            burn::tensor::TensorData::new(act_vec, [1, seq_len, action_dim]), &device
         );
 
-        let loss = (y - target.clone()).powf_scalar(2.0).mean();
+        // Forward Pass: Encode observations to latents z and predict next z
+        let (z, predicted_z) = model.forward(obs_data, action_data);
 
-        if epoch % 10 == 0 || epoch == 1 {
-            println!("Epoch {}: Loss = {:?}", epoch, loss.clone().into_data());
+        // JEPA Loss = Prediction Loss (MSE) + SIGReg (Anti-collapse)
+        // Based on arXiv:2603.19312, SIGReg enforces diversity in latent representation z.
+        let loss = model.loss(z, predicted_z, 1.0);
+
+        if epoch % 50 == 0 || epoch == 1 {
+            println!("Epoch {:3}: Total Loss = {:?}", epoch, loss.clone().into_data());
         }
 
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
-        model = optim.step(lr, model, grads);
+        model = optim.step(1e-3, model, grads);
     }
 
-    println!("\nStep (Inference/JEPA) Demo with State Management:");
-    // Inject initial state from outside.
-    let h_re = Tensor::<MyBackend, 3>::zeros([1, d_inner, d_state], &device);
-    let h_im = Tensor::<MyBackend, 3>::zeros([1, d_inner, d_state], &device);
-
-    let u_step = Tensor::<MyBackend, 2>::ones([1, d_inner], &device);
-    let dt_step = Tensor::<MyBackend, 2>::zeros([1, d_inner], &device).add_scalar(0.1);
-    let br_step = Tensor::<MyBackend, 2>::zeros([1, d_state], &device).add_scalar(0.1);
-    let bi_step = Tensor::<MyBackend, 2>::zeros([1, d_state], &device);
-    let cr_step = Tensor::<MyBackend, 2>::zeros([1, d_state], &device).add_scalar(0.1);
-    let ci_step = Tensor::<MyBackend, 2>::zeros([1, d_state], &device);
-
-    let model_inf = model.valid();
-    // The step returns state, allowing it to be passed to the next time step, similar to JEPA.
-    let (y_step, next_h) = model_inf.step(
-        u_step,
-        dt_step,
-        ComplexTensor {
-            re: br_step,
-            im: bi_step,
-        },
-        ComplexTensor {
-            re: cr_step,
-            im: ci_step,
-        },
-        ComplexTensor { re: h_re, im: h_im },
+    println!("\nPhase 2: Open-loop Imagination in Latent Space");
+    
+    let model_valid = model.valid();
+    
+    // Start with initial observation [1.0, 0.0]
+    let test_obs = Tensor::<MyBackend, 3>::from_data(
+        burn::tensor::TensorData::new(vec![1.0, 0.0], [1, 1, 2]), &device
+    ); 
+    let test_action = Tensor::<MyBackend, 3>::from_data(
+        burn::tensor::TensorData::new(vec![0.0, 1.0], [1, 1, 2]), &device
     );
-    let next_h_re = next_h.re;
 
-    let mean_data = y_step.mean().into_data();
-    println!("Step output mean: {:?}", mean_data);
-    println!("Updated state h_re shape: {:?}", next_h_re.dims());
-    println!("State is now ready to be used as latent representation for JEPA.");
+    // Encode to get the initial latent state
+    let (z_start, _) = model_valid.forward(test_obs, test_action);
+    println!("Initial latent state z[0] (first 5 dims): {:?}", z_start.clone().slice([0..1, 0..1, 0..5]).into_data());
+
+    // Imagine the next state without new observations
+    // Mamba's internal state 'h' carries the context for advanced predictions.
+    let (_, z_imagined) = model_valid.forward(
+        Tensor::zeros([1, 1, 2], &device),
+        Tensor::ones([1, 1, 2], &device) 
+    );
+
+    println!("Imagined latent state z_hat[1] (first 5 dims): {:?}", z_imagined.slice([0..1, 0..1, 0..5]).into_data());
+
+    println!("\n[Verification]");
+    // If SIGReg is working, the variance of latent variables should be maintained.
+    // Variance near 0 would indicate "Representation Collapse".
+    let z_flat = z_start.reshape([32]);
+    let mean = z_flat.clone().mean();
+    let var = (z_flat - mean).powf_scalar(2.0).mean().into_data();
+    
+    println!("-> Latent Variance: {:?}", var);
+    let var_val = var.as_slice::<f32>().unwrap()[0];
+    if var_val > 0.1 {
+        println!("Result: SIGReg maintained latent diversity. Collapse avoided.");
+    } else {
+        println!("Result: Variance is low. Consider tuning learning rate or SIGReg weight.");
+    }
 }

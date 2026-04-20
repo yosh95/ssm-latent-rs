@@ -2279,7 +2279,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mamba-rs"
+name = "mamba-jepa-rs"
 version = "0.1.0"
 dependencies = [
  "burn",
