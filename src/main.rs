@@ -2,6 +2,7 @@ use burn::backend::{ndarray::NdArrayDevice, Autodiff, NdArray};
 use burn::module::AutodiffModule;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::Tensor;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use ssm_latent_model::latent::{LatentPredictor, LatentState};
 use ssm_latent_model::ssm::SsmConfig;
 
@@ -10,6 +11,7 @@ type MyAutodiffBackend = Autodiff<MyBackend>;
 
 fn main() {
     let device = NdArrayDevice::default();
+    let mut rng = StdRng::seed_from_u64(42); // Fixed seed for reproducibility
 
     let config = SsmConfig {
         d_model: 32,
@@ -32,7 +34,7 @@ fn main() {
         AdamConfig::new().init::<MyAutodiffBackend, LatentPredictor<MyAutodiffBackend>>();
 
     println!("==========================================================");
-    println!(" Latent SSM Predictor");
+    println!(" Latent SSM Predictor (Reproducible Mode)");
     println!("==========================================================");
 
     // Training Loop
@@ -44,8 +46,8 @@ fn main() {
             let offset = (b as f32) * 0.5 + (epoch as f32) * 0.01;
             for t in 0..seq_len {
                 let angle = (t as f32) * 0.3 + offset;
-                let noise_obs = (rand::random::<f32>() - 0.5) * 0.01;
-                let noise_act = (rand::random::<f32>() - 0.5) * 0.01;
+                let noise_obs: f32 = rng.gen_range(-0.005..0.005);
+                let noise_act: f32 = rng.gen_range(-0.005..0.005);
 
                 obs_vec.extend_from_slice(&[angle.cos() + noise_obs, angle.sin() + noise_obs]);
                 act_vec.extend_from_slice(&[

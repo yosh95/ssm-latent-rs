@@ -17,6 +17,7 @@ pub struct LatentPredictor<B: Backend> {
     action_encoder: Linear<B>,
     fusion: Linear<B>,
     ssm: SsmBlock<B>,
+    // Fixed random projection buffer (Param used for device management, but gradients are not needed)
     stability_projections: Param<Tensor<B, 2>>,
     d_model: usize,
 }
@@ -33,11 +34,14 @@ impl<B: Backend> LatentPredictor<B> {
         let fusion = LinearConfig::new(config.d_model * 2, config.d_model).init(device);
         let ssm = SsmBlock::new(config, device);
 
+        // Fixed projection matrix based on Gaussian distribution
         let stability_projections = Tensor::<B, 2>::random(
-            [config.d_model, 8],
+            [config.d_model, 16], // Number of random projections
             burn::tensor::Distribution::Normal(0.0, 1.0),
             device,
         );
+
+        // Normalize for stable projections
         let norm = stability_projections
             .clone()
             .powf_scalar(2.0)
@@ -51,7 +55,8 @@ impl<B: Backend> LatentPredictor<B> {
             action_encoder,
             fusion,
             ssm,
-            stability_projections: Param::from_tensor(stability_projections),
+            // Keep projections as fixed buffer by detaching gradients
+            stability_projections: Param::from_tensor(stability_projections.detach()),
             d_model: config.d_model,
         }
     }
@@ -112,53 +117,28 @@ impl<B: Backend> LatentPredictor<B> {
 
         let mse_loss = (target_z - pred_slice).powf_scalar(2.0).mean();
 
-        let reg_loss = stability_loss(z, self.stability_projections.val().detach());
+        // Efficient O(T) stability loss via Gaussian moment matching
+        let reg_loss = stability_loss(z, self.stability_projections.val());
 
         mse_loss + reg_loss.mul_scalar(stability_weight)
     }
 }
 
+/// Gaussian-based O(T) stability loss to prevent representation collapse in JEPA
 pub fn stability_loss<B: Backend>(z: Tensor<B, 3>, w: Tensor<B, 2>) -> Tensor<B, 1> {
     let [batch, seq_len, d_model] = z.dims();
     let n_projections = w.dims()[1];
-    let device = &z.device();
 
     let z_flat = z.reshape([batch * seq_len, d_model]);
-    let projections_flat = z_flat.matmul(w);
-    let projections = projections_flat.reshape([batch, seq_len, n_projections]);
+    let projections = z_flat.matmul(w).reshape([batch, seq_len, n_projections]);
 
-    let mean = projections.clone().mean_dim(1);
-    let proj_centered = projections - mean;
-    let var = proj_centered.clone().powf_scalar(2.0).mean_dim(1) + 1e-6;
-    let x = proj_centered / var.sqrt();
+    // Calculate statistics for each projection dimension (O(T) complexity)
+    let mean = projections.clone().mean_dim(1); // [batch, 1, n_projections]
+    let var = projections.var(1); // [batch, 1, n_projections]
 
-    let mut total_t = Tensor::zeros([1], device);
+    // Penalize deviation from standard normal distribution (mean=0, var=1)
+    let loss_mean = mean.powf_scalar(2.0).mean();
+    let loss_var = (var - 1.0).powf_scalar(2.0).mean();
 
-    for m in 0..n_projections {
-        let xm = x.clone().slice([0..batch, 0..seq_len, m..m + 1]);
-
-        let xm_i = xm.clone().unsqueeze_dim::<4>(2);
-        let xm_j = xm.clone().unsqueeze_dim::<4>(1);
-        let dist_sq = (xm_i - xm_j).powf_scalar(2.0);
-
-        let term1 = dist_sq
-            .mul_scalar(-0.5)
-            .exp()
-            .mean_dim(2)
-            .mean_dim(1)
-            .reshape([batch, 1]);
-
-        let term2 = xm
-            .powf_scalar(2.0)
-            .mul_scalar(-0.25)
-            .exp()
-            .mean_dim(1)
-            .mul_scalar(2.0 * 2.0f64.sqrt())
-            .reshape([batch, 1]);
-
-        let tm = term1 - term2 + (1.0 / 3.0f64.sqrt());
-        total_t = total_t + tm.powf_scalar(2.0).mean();
-    }
-
-    total_t / (n_projections as f64)
+    (loss_mean + loss_var).unsqueeze()
 }

@@ -157,6 +157,7 @@ impl<B: Backend> SsmBlock<B> {
         self.out_proj.forward(y)
     }
 
+    /// Selective scan using complex state-space dynamics and parallel scan
     pub fn selective_scan(
         &self,
         u: Tensor<B, 3>,
@@ -217,23 +218,36 @@ impl<B: Backend> SsmBlock<B> {
             * da_re.unsqueeze_dim::<5>(4);
 
         let d_head_mimo = d_head / mimo_rank;
-        let mut bx_prev = bx.clone().slice([0..batch, 0..seq_len - 1, 0..n_heads, 0..d_state, 0..d_head_mimo]);
+        let mut bx_prev = bx.clone().slice([
+            0..batch,
+            0..seq_len - 1,
+            0..n_heads,
+            0..d_state,
+            0..d_head_mimo,
+        ]);
         bx_prev = Tensor::cat(
             vec![
-                Tensor::zeros(
-                    [batch, 1, n_heads, d_state, d_head_mimo],
-                    &bx.device(),
-                ),
+                Tensor::zeros([batch, 1, n_heads, d_state, d_head_mimo], &bx.device()),
                 bx_prev,
             ],
             1,
         );
         let w = gamma * bx + beta * bx_prev;
 
-        let w0 = w
-            .clone()
-            .slice([0..batch, 0..seq_len, 0..n_heads, 0..d_state / 2, 0..d_head_mimo]);
-        let w1 = w.slice([0..batch, 0..seq_len, 0..n_heads, d_state / 2..d_state, 0..d_head_mimo]);
+        let w0 = w.clone().slice([
+            0..batch,
+            0..seq_len,
+            0..n_heads,
+            0..d_state / 2,
+            0..d_head_mimo,
+        ]);
+        let w1 = w.slice([
+            0..batch,
+            0..seq_len,
+            0..n_heads,
+            d_state / 2..d_state,
+            0..d_head_mimo,
+        ]);
 
         let (h_re, h_im) = self.parallel_scan(a00, a01, a10, a11, w0, w1);
         let h = Tensor::cat(vec![h_re, h_im], 3);
@@ -241,6 +255,7 @@ impl<B: Backend> SsmBlock<B> {
         c.matmul(h).reshape([batch, seq_len, self.d_inner])
     }
 
+    /// Parallel prefix scan for O(log T) complexity
     fn parallel_scan(
         &self,
         mut a00: Tensor<B, 5>,
@@ -254,43 +269,127 @@ impl<B: Backend> SsmBlock<B> {
         let [_b, _s, _n, _d4, w_dim5] = w0.dims();
         let mut offset = 1;
         while offset < seq_len {
-            let left = 0..(seq_len - offset);
-            let right = offset..seq_len;
-            let (r00, r01, r10, r11) = (
-                a00.clone().slice([0..batch, right.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-                a01.clone().slice([0..batch, right.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-                a10.clone().slice([0..batch, right.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-                a11.clone().slice([0..batch, right.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-            );
-            let (l00, l01, l10, l11) = (
-                a00.clone().slice([0..batch, left.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-                a01.clone().slice([0..batch, left.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-                a10.clone().slice([0..batch, left.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-                a11.clone().slice([0..batch, left.clone(), 0..n_heads, 0..dim4, 0..a_dim5]),
-            );
-            let (rw0, rw1, lw0, lw1) = (
-                w0.clone().slice([0..batch, right.clone(), 0..n_heads, 0..dim4, 0..w_dim5]),
-                w1.clone().slice([0..batch, right.clone(), 0..n_heads, 0..dim4, 0..w_dim5]),
-                w0.clone().slice([0..batch, left.clone(), 0..n_heads, 0..dim4, 0..w_dim5]),
-                w1.clone().slice([0..batch, left.clone(), 0..n_heads, 0..dim4, 0..w_dim5]),
-            );
+            let left_range = 0..(seq_len - offset);
+            let right_range = offset..seq_len;
+
+            let r00 = a00.clone().slice([
+                0..batch,
+                right_range.clone(),
+                0..n_heads,
+                0..dim4,
+                0..a_dim5,
+            ]);
+            let r01 = a01.clone().slice([
+                0..batch,
+                right_range.clone(),
+                0..n_heads,
+                0..dim4,
+                0..a_dim5,
+            ]);
+            let r10 = a10.clone().slice([
+                0..batch,
+                right_range.clone(),
+                0..n_heads,
+                0..dim4,
+                0..a_dim5,
+            ]);
+            let r11 = a11.clone().slice([
+                0..batch,
+                right_range.clone(),
+                0..n_heads,
+                0..dim4,
+                0..a_dim5,
+            ]);
+
+            let l00 =
+                a00.clone()
+                    .slice([0..batch, left_range.clone(), 0..n_heads, 0..dim4, 0..a_dim5]);
+            let l01 =
+                a01.clone()
+                    .slice([0..batch, left_range.clone(), 0..n_heads, 0..dim4, 0..a_dim5]);
+            let l10 =
+                a10.clone()
+                    .slice([0..batch, left_range.clone(), 0..n_heads, 0..dim4, 0..a_dim5]);
+            let l11 =
+                a11.clone()
+                    .slice([0..batch, left_range.clone(), 0..n_heads, 0..dim4, 0..a_dim5]);
+
+            let rw0 = w0.clone().slice([
+                0..batch,
+                right_range.clone(),
+                0..n_heads,
+                0..dim4,
+                0..w_dim5,
+            ]);
+            let rw1 = w1.clone().slice([
+                0..batch,
+                right_range.clone(),
+                0..n_heads,
+                0..dim4,
+                0..w_dim5,
+            ]);
+            let lw0 =
+                w0.clone()
+                    .slice([0..batch, left_range.clone(), 0..n_heads, 0..dim4, 0..w_dim5]);
+            let lw1 =
+                w1.clone()
+                    .slice([0..batch, left_range.clone(), 0..n_heads, 0..dim4, 0..w_dim5]);
+
             let n00 = r00.clone() * l00.clone() + r01.clone() * l10.clone();
             let n01 = r00.clone() * l01.clone() + r01.clone() * l11.clone();
             let n10 = r10.clone() * l00.clone() + r11.clone() * l10.clone();
             let n11 = r10.clone() * l01.clone() + r11.clone() * l11.clone();
             let nw0 = r00 * lw0.clone() + r01 * lw1.clone() + rw0;
             let nw1 = r10 * lw0 + r11 * lw1 + rw1;
-            a00 = Tensor::cat(vec![a00.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]), n00], 1);
-            a01 = Tensor::cat(vec![a01.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]), n01], 1);
-            a10 = Tensor::cat(vec![a10.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]), n10], 1);
-            a11 = Tensor::cat(vec![a11.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]), n11], 1);
-            w0 = Tensor::cat(vec![w0.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..w_dim5]), nw0], 1);
-            w1 = Tensor::cat(vec![w1.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..w_dim5]), nw1], 1);
+
+            a00 = Tensor::cat(
+                vec![
+                    a00.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]),
+                    n00,
+                ],
+                1,
+            );
+            a01 = Tensor::cat(
+                vec![
+                    a01.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]),
+                    n01,
+                ],
+                1,
+            );
+            a10 = Tensor::cat(
+                vec![
+                    a10.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]),
+                    n10,
+                ],
+                1,
+            );
+            a11 = Tensor::cat(
+                vec![
+                    a11.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..a_dim5]),
+                    n11,
+                ],
+                1,
+            );
+            w0 = Tensor::cat(
+                vec![
+                    w0.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..w_dim5]),
+                    nw0,
+                ],
+                1,
+            );
+            w1 = Tensor::cat(
+                vec![
+                    w1.slice([0..batch, 0..offset, 0..n_heads, 0..dim4, 0..w_dim5]),
+                    nw1,
+                ],
+                1,
+            );
             offset *= 2;
         }
         (w0, w1)
     }
 
+    /// Sequential forward step for autoregressive inference
     pub fn forward_step(
         &self,
         x: Tensor<B, 2>,
@@ -383,6 +482,7 @@ impl<B: Backend> SsmBlock<B> {
         )
     }
 
+    /// Complex rotation in state space
     fn rotate_state(&self, h: Tensor<B, 4>, angle: Tensor<B, 3>) -> Tensor<B, 4> {
         let [batch, n_heads, d_state, d_head_mimo] = h.dims();
         let cos = angle.clone().cos().unsqueeze_dim::<4>(3);
