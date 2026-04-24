@@ -324,8 +324,10 @@ impl<B: Backend> SsmBlock<B> {
                 Tensor::zeros([batch, d_inner, kernel_size - 1], &u_orig.device())
             });
             let x_conv = Tensor::cat(vec![current_conv_state, u_orig.unsqueeze_dim::<3>(2)], 2);
+            let u_conv = conv.forward(x_conv.clone());
+            let [batch, d_inner, _seq] = u_conv.dims();
             (
-                conv.forward(x_conv.clone()).squeeze::<2>(),
+                u_conv.reshape([batch, d_inner]),
                 Some(x_conv.slice([0..batch, 0..d_inner, 1..kernel_size])),
             )
         } else {

@@ -36,7 +36,10 @@ fn test_ssm_block_forward_equivalence_multi_batch() {
     let mut y_step_list = Vec::new();
 
     for t in 0..seq_len {
-        let xt = x.clone().slice([0..batch, t..t + 1]).squeeze::<2>();
+        let xt = x.clone().slice([0..batch, t..t + 1]);
+        let [batch, _seq, d_model] = xt.dims();
+        let xt = xt.reshape([batch, d_model]);
+
         let (yt, next_h, current_bx, next_conv_state) =
             block.forward_step(xt, h, prev_bx, conv_state);
 

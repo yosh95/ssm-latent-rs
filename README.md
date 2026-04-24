@@ -27,7 +27,10 @@ Run the demonstration script:
 cargo run --release
 ```
 
-This demo trains a world model to predict and "imagine" the future states of a dynamical system in latent space.
+The demo consists of three parts:
+1.  **Observation**: Visualize the raw signal (a noisy circular motion).
+2.  **Dreaming (Training)**: The model learns the underlying laws of the world. Every 20 epochs, it runs a "mental simulation" side-by-side with the ground truth to show how its understanding improves.
+3.  **Pure Imagination**: The model predicts future states without any external observations, relying solely on its internal "World Model".
 
 ## Testing
 

@@ -92,10 +92,10 @@ impl<B: Backend> LatentPredictor<B> {
         action: Tensor<B, 2>,
         state: LatentState<B>,
     ) -> (Tensor<B, 2>, LatentState<B>) {
-        let a = self
-            .action_encoder
-            .forward(action.unsqueeze_dim::<3>(1))
-            .squeeze::<2>();
+        let a = self.action_encoder.forward(action.unsqueeze_dim::<3>(1));
+        let [batch, _seq, d_model] = a.dims();
+        let a = a.reshape([batch, d_model]);
+
         let u_concat = Tensor::cat(vec![z_prev, a], 1);
         let u = self.fusion.forward(u_concat);
 
