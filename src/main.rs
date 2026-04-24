@@ -204,7 +204,7 @@ fn main() {
     println!("It will 'imagine' the future solely based on its internal world model.");
     sleep(Duration::from_millis(1500));
 
-    run_demo(&explorer.valid(), &config, &device, "Final World Model");
+    run_demo(&explorer.valid(), &config, &device, &format!("Final World Model (Epoch {})", epochs));
 
     println!("--------------------------------------------------");
     println!("The Explorer successfully traversed the unknown using only its mind.");
@@ -258,8 +258,8 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         let angle = (t as f32) * 0.3;
 
         // Ground Truth for comparison
-        let _real_x = angle.cos();
-        let _real_y = angle.sin();
+        let real_x = angle.cos();
+        let real_y = angle.sin();
 
         // Action to take
         let action_val = vec![-0.1 * angle.sin(), 0.1 * angle.cos()];
@@ -281,36 +281,12 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         let x = pos_slice[0];
         let y = pos_slice[1];
 
-        // ASCII Visualization
-        let width = 30;
-        let height = 15;
-        let mut grid = vec![vec![' '; width]; height];
-
-        // Draw axes
-        for char in &mut grid[height / 2] {
-            *char = '-';
-        }
-        for row in &mut grid {
-            row[width / 2] = '|';
-        }
-        grid[height / 2][width / 2] = '+';
-
-        let gx = (((x + 1.5) / 3.0) * (width as f32 - 1.0)) as i32;
-        let gy = (((1.5 - y) / 3.0) * (height as f32 - 1.0)) as i32;
-
-        if gx >= 0 && gx < width as i32 && gy >= 0 && gy < height as i32 {
-            grid[gy as usize][gx as usize] = 'O';
-        }
-
-        println!("\x1B[H\x1B[2J"); // Clear screen
-        println!(
-            "Step {:2}: Mental Map Projection (x={:+.2}, y={:+.2})",
-            t, x, y
+        draw_frame(
+            title,
+            t as usize,
+            Some(([real_x, real_y], 'X', "Ground Truth")),
+            Some(([x, y], 'O', "Mental Map")),
         );
-        for row in grid {
-            let s: String = row.into_iter().collect();
-            println!("  {}", s);
-        }
 
         sleep(Duration::from_millis(150));
     }
