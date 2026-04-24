@@ -1,5 +1,4 @@
 #![recursion_limit = "256"]
-use burn::backend::{Autodiff, Wgpu, wgpu::WgpuDevice};
 use burn::module::AutodiffModule;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::Tensor;
@@ -9,8 +8,13 @@ use ssm_latent_model::ssm::SsmConfig;
 use std::thread::sleep;
 use std::time::Duration;
 
-type MyBackend = Wgpu;
-type MyAutodiffBackend = Autodiff<MyBackend>;
+// --- Backend Selection based on features ---
+#[cfg(feature = "wgpu")]
+type MyBackend = burn::backend::Wgpu;
+#[cfg(all(not(feature = "wgpu"), feature = "ndarray"))]
+type MyBackend = burn::backend::NdArray;
+
+type MyAutodiffBackend = burn::backend::Autodiff<MyBackend>;
 
 fn draw_frame(
     title: &str,
@@ -73,7 +77,11 @@ fn draw_frame(
 }
 
 fn main() {
-    let device = WgpuDevice::default();
+    // --- Device Selection ---
+    #[cfg(feature = "wgpu")]
+    let device = burn::backend::wgpu::WgpuDevice::default();
+    #[cfg(all(not(feature = "wgpu"), feature = "ndarray"))]
+    let device = burn::backend::ndarray::NdArrayDevice::default();
     let mut rng = StdRng::seed_from_u64(42);
 
     println!("==========================================================");
@@ -209,6 +217,7 @@ fn run_demo<B: burn::tensor::backend::Backend>(
     device: &B::Device,
     title: &str,
 ) {
+    println!("\n--- {} ---", title);
     let batch_size = 1;
 
     // Initial memory
@@ -249,8 +258,8 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         let angle = (t as f32) * 0.3;
 
         // Ground Truth for comparison
-        let real_x = angle.cos();
-        let real_y = angle.sin();
+        let _real_x = angle.cos();
+        let _real_y = angle.sin();
 
         // Action to take
         let action_val = vec![-0.1 * angle.sin(), 0.1 * angle.cos()];
@@ -272,13 +281,37 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         let x = pos_slice[0];
         let y = pos_slice[1];
 
-        draw_frame(
-            title,
-            t,
-            Some(([real_x, real_y], 'X', "Ground Truth")),
-            Some(([x, y], 'O', "Mental Map (Dream)")),
-        );
+        // ASCII Visualization
+        let width = 30;
+        let height = 15;
+        let mut grid = vec![vec![' '; width]; height];
 
-        sleep(Duration::from_millis(100));
+        // Draw axes
+        for char in &mut grid[height / 2] {
+            *char = '-';
+        }
+        for row in &mut grid {
+            row[width / 2] = '|';
+        }
+        grid[height / 2][width / 2] = '+';
+
+        let gx = (((x + 1.5) / 3.0) * (width as f32 - 1.0)) as i32;
+        let gy = (((1.5 - y) / 3.0) * (height as f32 - 1.0)) as i32;
+
+        if gx >= 0 && gx < width as i32 && gy >= 0 && gy < height as i32 {
+            grid[gy as usize][gx as usize] = 'O';
+        }
+
+        println!("\x1B[H\x1B[2J"); // Clear screen
+        println!(
+            "Step {:2}: Mental Map Projection (x={:+.2}, y={:+.2})",
+            t, x, y
+        );
+        for row in grid {
+            let s: String = row.into_iter().collect();
+            println!("  {}", s);
+        }
+
+        sleep(Duration::from_millis(150));
     }
 }

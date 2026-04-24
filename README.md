@@ -39,6 +39,11 @@ Run equivalence tests (Parallel vs Sequential):
 cargo test
 ```
 
+## References
+
+- Lahoti, A., Li, K. Y., Chen, B., Wang, C., Bick, A., Kolter, J. Z., Dao, T., & Gu, A. (2026). Mamba-3: Improved Sequence Modeling using State Space Principles. *arXiv preprint arXiv:2603.15569*. [https://arxiv.org/abs/2603.15569](https://arxiv.org/abs/2603.15569)
+- Maes, L., Le Lidec, Q., Scieur, D., LeCun, Y., & Balestriero, R. (2026). LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels. *arXiv preprint arXiv:2603.19312*. [https://arxiv.org/abs/2603.19312](https://arxiv.org/abs/2603.19312)
+
 ## License
 
 MIT License

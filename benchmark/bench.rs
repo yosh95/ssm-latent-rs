@@ -33,8 +33,8 @@ fn run_benchmark<B: AutodiffBackend>(device: B::Device, name: &str, epochs: usiz
             burn::tensor::Distribution::Default,
             &device,
         );
-        let (z, predicted_z) = model.forward(obs_data, action_data);
-        let loss = model.loss(z, predicted_z, 1.0);
+        let (z, predicted_z, reconstructed_x) = model.forward(obs_data.clone(), action_data);
+        let loss = model.loss(z, predicted_z, reconstructed_x, obs_data, 1.0);
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
         model = optim.step(2e-3, model, grads);
@@ -54,8 +54,8 @@ fn run_benchmark<B: AutodiffBackend>(device: B::Device, name: &str, epochs: usiz
             &device,
         );
 
-        let (z, predicted_z) = model.forward(obs_data, action_data);
-        let loss = model.loss(z, predicted_z, 1.0);
+        let (z, predicted_z, reconstructed_x) = model.forward(obs_data.clone(), action_data);
+        let loss = model.loss(z, predicted_z, reconstructed_x, obs_data, 1.0);
 
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-burn = { version = "0.20", features = ["wgpu", "ndarray", "std", "autodiff"] }
+burn = { version = "0.20", features = ["std", "autodiff"] }
 rand = "0.10"
 
+[features]
+default = ["wgpu"]
+wgpu = ["burn/wgpu"]
+ndarray = ["burn/ndarray"]
