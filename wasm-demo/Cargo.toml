@@ -1,0 +1,23 @@
+[package]
+name = "wasm_demo"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ssm-latent-model = { path = "..", default-features = false }
+burn = { version = "0.20", features = ["std", "autodiff"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["CanvasRenderingContext2d", "Window", "Document", "HtmlCanvasElement", "HtmlButtonElement", "console", "HtmlElement", "Node", "Element"] }
+console_error_panic_hook = "0.1"
+rand = "0.10"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+
+[features]
+default = ["ndarray"]
+wgpu = ["burn/wgpu", "ssm-latent-model/wgpu"]
+ndarray = ["burn/ndarray", "ssm-latent-model/ndarray"]

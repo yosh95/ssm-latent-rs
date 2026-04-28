@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Mamba-JEPA World Model Demo</title>
+    <base href="/" />
+    <link data-trunk rel="rust" />
+    <style>
+        body { background: #1a1a1a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+        canvas { background: #000; border: 2px solid #444; border-radius: 8px; margin-top: 20px; }
+        #status { margin-top: 10px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <h1>World Model: Spatial Intelligence Demo</h1>
+    <div id="status">Loading World Model...</div>
+    <div style="margin: 20px 0;">
+        <button id="startButton" style="padding: 10px 20px; font-size: 16px; cursor: pointer; background: #4a90e2; color: white; border: none; border-radius: 4px;">Start Learning</button>
+    </div>
+    <canvas id="canvas" width="600" height="400"></canvas>
+    
+    <div style="margin-top: 20px; max-width: 600px; line-height: 1.6;">
+        <p><strong>Blue Line:</strong> Reality (Physics Engine)<br>
+        <strong>Orange Line:</strong> Imagination (Mamba-JEPA World Model)</p>
+        <p>Running entirely in your browser via WebAssembly + WebGPU.</p>
+    </div>
+</body>
+</html>

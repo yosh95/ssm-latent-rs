@@ -21,16 +21,41 @@ cargo build
 
 ## Usage
 
-Run the demonstration script:
-
+### Native Demo
+Run the command-line demonstration script:
 ```bash
 cargo run --release
 ```
 
-The demo consists of three parts:
+The native demo consists of three parts:
 1.  **Observation**: Visualize the raw signal (a noisy circular motion).
 2.  **Dreaming (Training)**: The model learns the underlying laws of the world. Every 20 epochs, it runs a "mental simulation" side-by-side with the ground truth to show how its understanding improves.
 3.  **Pure Imagination**: The model predicts future states without any external observations, relying solely on its internal "World Model".
+
+### WASM Metronome Demo
+
+The metronome learning demo runs entirely in the browser using WebAssembly and [Trunk](https://trunkrs.dev/). **Training and prediction are performed locally in your browser.**
+
+![WASM Metronome Demo](images/wasm_demo.gif)
+
+1. Install Trunk:
+   ```bash
+   cargo install trunk
+   ```
+2. Navigate to the demo directory:
+   ```bash
+   cd wasm-demo
+   ```
+3. Run the development server:
+   ```bash
+   trunk serve
+   ```
+4. Open your browser to `http://localhost:8080`.
+
+The WASM demo consists of:
+- **Blue Line**: Reality (The physics-driven ground truth).
+- **Orange Line**: Imagination (The model's prediction).
+- **In-Browser Training**: The model learns the metronome's dynamics in real-time within the browser. After about 100 epochs, the "Imagination" will sync smoothly with "Reality".
 
 ## Testing
 
