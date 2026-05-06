@@ -35,6 +35,8 @@ The native demo consists of three parts:
 ### Log Anomaly Detection Demo (SenseTransformer + SSM)
 This demo showcases how to detect semantic anomalies in system logs using a pre-trained SentenceTransformer and the Latent SSM model.
 
+![Log Anomaly Demo](images/log_demo.gif)
+
 ```bash
 cd log-anomaly-demo
 cargo run --release
