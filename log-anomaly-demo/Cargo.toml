@@ -7,7 +7,7 @@ default-run = "log-demo"
 [dependencies]
 ssm-latent-model = { path = "..", default-features = false, features = ["wgpu", "ndarray"] }
 burn = { version = "0.20", features = ["std", "autodiff", "wgpu", "train"] }
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["tls-rustls", "ndarray", "download-binaries"] }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["tls-rustls", "ndarray", "download-binaries", "cuda"] }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 hf-hub = { version = "0.5", default-features = false, features = ["rustls-tls", "ureq"] }
 ndarray = "0.17"

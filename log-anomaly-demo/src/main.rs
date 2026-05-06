@@ -1,5 +1,5 @@
-use burn::backend::ndarray::NdArrayDevice;
-use burn::backend::NdArray;
+#![recursion_limit = "256"]
+use burn::backend::wgpu::{Wgpu, WgpuDevice};
 use burn::backend::Autodiff;
 use burn::optim::AdamConfig;
 use burn::optim::Optimizer;
@@ -8,6 +8,7 @@ use hf_hub::api::sync::Api;
 use ndarray::{Array2, Axis};
 use ort::session::Session;
 use ort::value::Tensor as OrtTensor;
+use ort::execution_providers::CUDAExecutionProvider;
 use rand::seq::IndexedRandom;
 use rand::RngExt;
 use ssm_latent_model::latent::LatentPredictor;
@@ -18,7 +19,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use tokenizers::Tokenizer;
 
-type MyBackend = Autodiff<NdArray>;
+type MyBackend = Autodiff<Wgpu>;
 
 const RESET: &str = "\x1b[0m";
 const RED: &str = "\x1b[31m";
@@ -40,7 +41,16 @@ impl LogEmbedder {
         let tokenizer_path = repo.get("tokenizer.json").unwrap();
         let tokenizer = Tokenizer::from_file(tokenizer_path).unwrap();
         let model_bytes = fs::read(model_path).unwrap();
-        let session = Session::builder().unwrap().with_intra_threads(1).unwrap().commit_from_memory(&model_bytes).unwrap();
+        
+        // CUDAの初期化を試み、失敗した場合は標準（CPU）セッションを使用
+        let session = match Session::builder().unwrap().with_execution_providers([CUDAExecutionProvider::default().build()]) {
+            Ok(builder) => builder.with_intra_threads(1).unwrap().commit_from_memory(&model_bytes).unwrap(),
+            Err(_) => {
+                println!("{}CUDA execution provider is not available. Falling back to CPU for embeddings.{}", YELLOW, RESET);
+                Session::builder().unwrap().with_intra_threads(1).unwrap().commit_from_memory(&model_bytes).unwrap()
+            }
+        };
+        
         Self { session, tokenizer }
     }
 
@@ -128,8 +138,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let use_pause = args.contains(&"--pause".to_string());
     
-    let device = NdArrayDevice::default();
+    // WGPUは自動的に最適なバックエンド（Vulkan/Metal/DX12/etc）を選択する
+    let device = WgpuDevice::default();
     println!("\n{}=== SSM LOG WORLD MODEL: END-TO-END DEMO ==={}", BOLD, RESET);
+    println!("Device: {:?}", device);
     
     // --- STEP 0: GENERATE DATA ---
     println!("\n{}[Step 0/4]{} Generating Randomized Log Data...", BOLD, RESET);

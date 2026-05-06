@@ -275,3 +275,6 @@ TSWLatexianTemp*
 ### LaTeX Patch ###
 # glossaries
 *.glstex
+
+.cargo
+dist
