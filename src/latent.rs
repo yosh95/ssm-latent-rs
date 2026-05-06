@@ -23,6 +23,8 @@ pub struct LatentPredictor<B: Backend> {
     d_model: usize,
 }
 
+use burn::record::Recorder;
+
 impl<B: Backend> LatentPredictor<B> {
     pub fn new(
         config: &SsmConfig,
@@ -111,6 +113,26 @@ impl<B: Backend> LatentPredictor<B> {
                 conv_state: next_conv_state,
             },
         )
+    }
+
+    pub fn save(&self, file_path: &str) -> Result<(), std::io::Error> {
+        let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
+        let path = std::path::Path::new(file_path);
+
+        recorder
+            .record(self.clone().into_record(), path.to_path_buf())
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn load(self, file_path: &str, device: &B::Device) -> Result<Self, std::io::Error> {
+        let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
+        let path = std::path::Path::new(file_path);
+
+        let record = recorder
+            .load(path.to_path_buf(), device)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(self.load_record(record))
     }
 
     pub fn loss(

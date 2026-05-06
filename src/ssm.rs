@@ -52,8 +52,10 @@ impl<B: Backend> SsmBlock<B> {
             d_inner.is_multiple_of(n_heads),
             "d_inner must be divisible by n_heads"
         );
+        assert!(mimo_rank > 0, "mimo_rank must be greater than 0");
+        let d_head = d_inner / n_heads;
         assert!(
-            (d_inner / n_heads).is_multiple_of(mimo_rank),
+            d_head.is_multiple_of(mimo_rank),
             "d_head must be divisible by mimo_rank"
         );
         assert!(

@@ -29,10 +29,22 @@ fn test_multimodal_forward_logic() {
     // actions: [B, T, ActionDim] = [2, 4, 4]
     let action = Tensor::<NdArray, 3>::zeros([batch, seq, 4], &device);
 
-    let (pred_z, dec_img, dec_sens) = predictor.forward(img, sensor, action);
+    let (z, pred_z, dec_img, dec_sens) = predictor.forward(img.clone(), sensor.clone(), action);
 
     // Verify expected output shapes
+    assert_eq!(z.dims(), [batch, seq, 32]);
     assert_eq!(pred_z.dims(), [batch, seq, 32]);
     assert_eq!(dec_img.dims(), [batch, seq, 3, 16, 16]);
     assert_eq!(dec_sens.dims(), [batch, seq, 8]);
+
+    let loss = predictor.loss(ssm_latent_model::multimodal::MultimodalLossInput {
+        z,
+        pred_z,
+        recons_img: dec_img,
+        orig_img: img,
+        recons_sens: dec_sens,
+        orig_sens: sensor,
+        stability_weight: 1.0,
+    });
+    assert!(loss.into_data().as_slice::<f32>().unwrap()[0] >= 0.0);
 }
