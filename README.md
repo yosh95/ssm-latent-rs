@@ -32,6 +32,14 @@ The native demo consists of three parts:
 2.  **Dreaming (Training)**: The model learns the underlying laws of the world. Every 20 epochs, it runs a "mental simulation" side-by-side with the ground truth to show how its understanding improves.
 3.  **Pure Imagination**: The model predicts future states without any external observations, relying solely on its internal "World Model".
 
+### Log Anomaly Detection Demo (SenseTransformer + SSM)
+This demo showcases how to detect semantic anomalies in system logs using a pre-trained SentenceTransformer and the Latent SSM model.
+
+```bash
+cd log-anomaly-demo
+cargo run
+```
+
 ### WASM Metronome Demo
 
 The metronome learning demo runs entirely in the browser using WebAssembly and [Trunk](https://trunkrs.dev/). **Training and prediction are performed locally in your browser.**
