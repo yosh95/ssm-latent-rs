@@ -38,8 +38,7 @@ This demo showcases how to detect semantic anomalies in system logs using a pre-
 ![Log Anomaly Demo](images/log_demo.gif)
 
 ```bash
-cd log-anomaly-demo
-cargo run --release
+cargo run -p log-anomaly-demo --release
 ```
 
 ### WASM Metronome Demo
