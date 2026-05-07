@@ -3,6 +3,7 @@ members = [
     "circle-world-demo",
     "log-anomaly-demo",
     "wasm-demo",
+    "deterministic-ai-agent-demo",
 ]
 
 [package]
