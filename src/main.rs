@@ -22,7 +22,7 @@ fn draw_frame(
     left_point: Option<([f32; 2], char, &str)>,
     right_point: Option<([f32; 2], char, &str)>,
 ) {
-    let width = 40;
+    let width = 30;
     let height = 15;
 
     let mut grids = vec![vec![vec![' '; width]; height]; 2];
@@ -56,7 +56,7 @@ fn draw_frame(
         let label_left = left_point.as_ref().map(|p| p.2).unwrap_or("");
         let label_right = right_point.as_ref().map(|p| p.2).unwrap_or("");
         println!(
-            "  {:^width$}          {:^width$}",
+            "  {:^width$}    {:^width$}",
             label_left,
             label_right,
             width = width
@@ -65,7 +65,7 @@ fn draw_frame(
         for (row_left, row_right) in grids[0].iter().zip(grids[1].iter()) {
             let s_left: String = row_left.iter().collect();
             let s_right: String = row_right.iter().collect();
-            println!("  {}          {}", s_left, s_right);
+            println!("  {}    {}", s_left, s_right);
         }
     } else if let Some((_, _, label)) = left_point {
         println!("  {:^width$}", label, width = width);
