@@ -1,0 +1,17 @@
+[package]
+name = "circle-world-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ssm-latent-model = { path = ".." }
+burn = { version = "0.20", features = ["std", "autodiff", "wgpu", "train"] }
+rand = "0.10"
+
+[features]
+wgpu = ["burn/wgpu"]
+ndarray = ["burn/std"]
+
+[[bin]]
+name = "circle-world-demo"
+path = "src/main.rs"

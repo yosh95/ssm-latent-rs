@@ -11,7 +11,7 @@ use ort::session::Session;
 use ort::value::Tensor as OrtTensor;
 use rand::RngExt;
 use rand::seq::IndexedRandom;
-use ssm_latent_model::latent::{LatentPredictor, LatentLossArgs};
+use ssm_latent_model::latent::{LatentLossArgs, LatentPredictor};
 use ssm_latent_model::ssm::SsmConfig;
 use std::io::{self, Write};
 use std::thread::sleep;
@@ -95,7 +95,12 @@ impl LogEmbedder {
         ];
 
         // Check input names expected by the session
-        let input_names: Vec<String> = self.session.inputs().iter().map(|i| i.name().to_string()).collect();
+        let input_names: Vec<String> = self
+            .session
+            .inputs()
+            .iter()
+            .map(|i| i.name().to_string())
+            .collect();
 
         if input_names.iter().any(|n| n == "token_type_ids") {
             let token_type_ids = encoding.get_type_ids();
@@ -199,8 +204,6 @@ impl EwmaThreshold {
         let delta = s - old_mean;
         self.var = self.alpha * delta * (s - self.mean) + (1.0 - self.alpha) * self.var;
     }
-
-    
 }
 
 /// Hybrid adaptive threshold combining MAD-based calibration with EWMA online tracking.
@@ -221,22 +224,13 @@ impl HybridAdaptiveThreshold {
     ///
     /// The baseline is the **maximum** of the MAD threshold and mean*4.0,
     /// so it is never weaker than the old hardcoded threshold.
-    fn from_calibration(
-        scores: &[f32],
-        k_mad: f32,
-        alpha: f64,
-        k_ewma: f64,
-    ) -> Self {
+    fn from_calibration(scores: &[f32], k_mad: f32, alpha: f64, k_ewma: f64) -> Self {
         let mad_threshold = compute_mad_threshold(scores, k_mad);
         let mean = scores.iter().sum::<f32>() / scores.len() as f32;
         let old_threshold = mean * 4.0;
         // Take the higher of the two so we never regress below the old threshold
         let baseline = mad_threshold.max(old_threshold);
-        let var = scores
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f32>()
-            / scores.len() as f32;
+        let var = scores.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / scores.len() as f32;
         Self {
             baseline_threshold: baseline,
             ewma: EwmaThreshold::new(alpha, k_ewma, 10, mean as f64, var as f64),
@@ -428,7 +422,8 @@ fn main() {
     let lr = 1e-3;
 
     for epoch in 1..=200 {
-        let (z, pred_z, reconstructed_x, predicted_x) = model.forward(input_tensor.clone(), actions.clone());
+        let (z, pred_z, reconstructed_x, predicted_x) =
+            model.forward(input_tensor.clone(), actions.clone());
         let loss = model.loss(LatentLossArgs {
             z,
             pred_z,
@@ -483,9 +478,9 @@ fn main() {
 
     let mut threshold_engine = HybridAdaptiveThreshold::from_calibration(
         &calibration_scores,
-        3.0,   // k_mad: MAD sensitivity (3.0 ≈ 99.7% for normal dist)
-        0.1,   // alpha: EWMA smoothing (0.1 = moderate adaptivity)
-        3.0,   // k_ewma: EWMA sensitivity
+        3.0, // k_mad: MAD sensitivity (3.0 ≈ 99.7% for normal dist)
+        0.1, // alpha: EWMA smoothing (0.1 = moderate adaptivity)
+        3.0, // k_ewma: EWMA sensitivity
     );
 
     let baseline = threshold_engine.baseline_threshold;
@@ -521,7 +516,10 @@ fn main() {
     pause_if_enabled(use_pause, "Start inference?");
 
     // --- STEP 3: INFERENCE ---
-    println!("\n{}[Step 3/4]{} Real-time Inference (Adaptive Threshold)...", BOLD, RESET);
+    println!(
+        "\n{}[Step 3/4]{} Real-time Inference (Adaptive Threshold)...",
+        BOLD, RESET
+    );
     println!(
         "{:<4} | {:<8} | {:<8} | {:<5} | {:<50}",
         "IDX", "MSE", "THRESH", "RES", "LOG SAMPLE"
@@ -617,7 +615,10 @@ fn main() {
         0.0
     };
 
-    println!("\n{}[Step 4/4]{} Final Report (Adaptive Threshold: MAD+EWMA)", BOLD, RESET);
+    println!(
+        "\n{}[Step 4/4]{} Final Report (Adaptive Threshold: MAD+EWMA)",
+        BOLD, RESET
+    );
     println!("-------------------------------------------");
     println!("{:<20} : {}{:.4}{}", "Precision", GREEN, precision, RESET);
     println!("{:<20} : {}{:.4}{}", "Recall", GREEN, recall, RESET);
@@ -640,17 +641,8 @@ fn main() {
         fn_count
     );
     println!("-------------------------------------------");
-    println!(
-        "{:<20} : {:.6}",
-        "Baseline (MAD k=3)", baseline
-    );
-    println!(
-        "{:<20} : {:.6}",
-        "Old (mean*4.0)", old_hardcoded_threshold
-    );
-    println!(
-        "{:<20} : {:.6}",
-        "Calibration Mean±Std", cal_mean
-    );
+    println!("{:<20} : {:.6}", "Baseline (MAD k=3)", baseline);
+    println!("{:<20} : {:.6}", "Old (mean*4.0)", old_hardcoded_threshold);
+    println!("{:<20} : {:.6}", "Calibration Mean±Std", cal_mean);
     println!("\nSemantic Anomaly Detection complete.");
 }

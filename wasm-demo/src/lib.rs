@@ -1,12 +1,12 @@
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlButtonElement};
-use burn::tensor::{Tensor, TensorData};
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-use ssm_latent_model::latent::{LatentPredictor, LatentState, LatentLossArgs};
+use burn::tensor::{Tensor, TensorData};
+use ssm_latent_model::latent::{LatentLossArgs, LatentPredictor, LatentState};
 use ssm_latent_model::ssm::SsmConfig;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
+use web_sys::{CanvasRenderingContext2d, HtmlButtonElement, HtmlCanvasElement};
 
 macro_rules! log {
     ($($t:tt)*) => (web_sys::console::log_1(&format!($($t)*).into()))
@@ -20,6 +20,8 @@ type RawBackend = burn::backend::NdArray<f32>;
 
 type Backend = burn::backend::Autodiff<RawBackend>;
 
+type ClosureLoop = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+
 #[wasm_bindgen(start)]
 pub async fn start() -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
@@ -27,10 +29,19 @@ pub async fn start() -> Result<(), JsValue> {
 
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();
-    let canvas = document.get_element_by_id("canvas").unwrap().dyn_into::<HtmlCanvasElement>()?;
-    let ctx = canvas.get_context("2d")?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
+    let canvas = document
+        .get_element_by_id("canvas")
+        .unwrap()
+        .dyn_into::<HtmlCanvasElement>()?;
+    let ctx = canvas
+        .get_context("2d")?
+        .unwrap()
+        .dyn_into::<CanvasRenderingContext2d>()?;
     let status = document.get_element_by_id("status").unwrap();
-    let start_button = document.get_element_by_id("startButton").unwrap().dyn_into::<HtmlButtonElement>()?;
+    let start_button = document
+        .get_element_by_id("startButton")
+        .unwrap()
+        .dyn_into::<HtmlButtonElement>()?;
 
     status.set_text_content(Some("Model Ready. Click Start to Begin."));
 
@@ -39,14 +50,17 @@ pub async fn start() -> Result<(), JsValue> {
     #[cfg(not(feature = "wgpu"))]
     let device = burn::backend::ndarray::NdArrayDevice::default();
 
-    let config = SsmConfig::new(32, 8, 4, 4, 2); 
+    let config = SsmConfig::new(32, 8, 4, 4, 2);
     let model = LatentPredictor::new(&config, 4, 1, &device);
     let optim = AdamConfig::new().init();
-    
+
     let d_inner = config.d_model * config.expand;
     let d_head = d_inner / config.n_heads;
     let latent_state = LatentState {
-        h: Tensor::zeros([1, config.n_heads, config.d_state, d_head / config.mimo_rank], &device),
+        h: Tensor::zeros(
+            [1, config.n_heads, config.d_state, d_head / config.mimo_rank],
+            &device,
+        ),
         prev_bx: None,
         conv_state: Some(Tensor::zeros([1, d_inner, config.conv_kernel - 1], &device)),
     };
@@ -70,22 +84,29 @@ pub async fn start() -> Result<(), JsValue> {
 
     app.borrow().draw(&ctx);
 
-    let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let f: ClosureLoop = Rc::new(RefCell::new(None));
     let g = f.clone();
 
     *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         let mut app = app.borrow_mut();
         app.update();
         app.draw(&ctx);
-        
+
         status.set_text_content(Some(&format!(
-            "Epoch: {} | Loss: {:.6} | Mode: {}", 
-            app.epoch_count, 
+            "Epoch: {} | Loss: {:.6} | Mode: {}",
+            app.epoch_count,
             app.loss,
-            if app.epoch_count < 50 { "Initial Training..." } else { "Reproducing Metronome" }
+            if app.epoch_count < 50 {
+                "Initial Training..."
+            } else {
+                "Reproducing Metronome"
+            }
         )));
 
-        web_sys::window().unwrap().request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref()).unwrap();
+        web_sys::window()
+            .unwrap()
+            .request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref())
+            .unwrap();
     }) as Box<dyn FnMut()>));
 
     let start_button_clone = start_button.clone();
@@ -93,7 +114,9 @@ pub async fn start() -> Result<(), JsValue> {
         start_button_clone.set_disabled(true);
         start_button_clone.set_inner_text("Running...");
         let window = web_sys::window().unwrap();
-        window.request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref()).unwrap();
+        window
+            .request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref())
+            .unwrap();
     }) as Box<dyn FnMut()>);
 
     start_button.set_onclick(Some(on_click.as_ref().unchecked_ref()));
@@ -104,7 +127,11 @@ pub async fn start() -> Result<(), JsValue> {
 
 struct AppState {
     model: LatentPredictor<Backend>,
-    optim: burn::optim::adaptor::OptimizerAdaptor<burn::optim::Adam, LatentPredictor<Backend>, Backend>,
+    optim: burn::optim::adaptor::OptimizerAdaptor<
+        burn::optim::Adam,
+        LatentPredictor<Backend>,
+        Backend,
+    >,
     #[cfg(feature = "wgpu")]
     device: burn::backend::wgpu::WgpuDevice,
     #[cfg(not(feature = "wgpu"))]
@@ -128,8 +155,8 @@ impl AppState {
         // 1. Metronome Physics
         self.time += 0.05;
         self.theta = (self.time).sin() * 1.2;
-        let action = 0.0; 
-        
+        let action = 0.0;
+
         let current_obs = [0.0, 0.0, self.theta as f32, (self.time).cos() as f32];
         self.history_obs.extend_from_slice(&current_obs);
         self.history_act.push(action);
@@ -140,14 +167,17 @@ impl AppState {
             self.history_act.remove(0);
         }
 
-        // 2. Continuous Training (Every 10 frames)
-        if self.history_act.len() == max_history && self.frame_count % 10 == 0 {
+        // Continuous Training (Every 10 frames)
+        if self.history_act.len() == max_history && self.frame_count.is_multiple_of(10) {
             self.train_step();
             self.epoch_count += 1;
         }
 
         // Softly sync imagination with reality
-        let obs = Tensor::<Backend, 3>::from_data(TensorData::new(current_obs.to_vec(), [1, 1, 4]), &self.device);
+        let obs = Tensor::<Backend, 3>::from_data(
+            TensorData::new(current_obs.to_vec(), [1, 1, 4]),
+            &self.device,
+        );
         let encoded_obs = self.model.encode(obs).reshape([1, self.config.d_model]);
 
         if let Some(z) = self.z_prev.take() {
@@ -156,13 +186,24 @@ impl AppState {
             self.z_prev = Some(z * (1.0 - mix_ratio) + encoded_obs * mix_ratio);
         } else {
             self.z_prev = Some(encoded_obs);
-            
+
             let d_inner = self.config.d_model * self.config.expand;
             let d_head = d_inner / self.config.n_heads;
             self.latent_state = Some(LatentState {
-                h: Tensor::zeros([1, self.config.n_heads, self.config.d_state, d_head / self.config.mimo_rank], &self.device),
+                h: Tensor::zeros(
+                    [
+                        1,
+                        self.config.n_heads,
+                        self.config.d_state,
+                        d_head / self.config.mimo_rank,
+                    ],
+                    &self.device,
+                ),
                 prev_bx: None,
-                conv_state: Some(Tensor::zeros([1, d_inner, self.config.conv_kernel - 1], &self.device)),
+                conv_state: Some(Tensor::zeros(
+                    [1, d_inner, self.config.conv_kernel - 1],
+                    &self.device,
+                )),
             });
         }
 
@@ -171,11 +212,14 @@ impl AppState {
             let decoded = self.model.decode(z_curr.clone().unsqueeze_dim::<3>(1));
             self.pred_theta = decoded.into_data().as_slice::<f32>().unwrap()[2] as f64;
 
-            let action_tensor = Tensor::<Backend, 2>::from_data(TensorData::new(vec![action], [1, 1]), &self.device);
-            
+            let action_tensor = Tensor::<Backend, 2>::from_data(
+                TensorData::new(vec![action], [1, 1]),
+                &self.device,
+            );
+
             // Step to predict NEXT state
             let (y, next_state) = self.model.step(z_curr, action_tensor, state);
-            
+
             // Detach tensors from the computation graph to save memory during pure inference
             self.z_prev = Some(y.detach());
             self.latent_state = Some(LatentState {
@@ -190,11 +234,11 @@ impl AppState {
         let seq_len = self.history_act.len();
         let obs_tensor = Tensor::<Backend, 3>::from_data(
             TensorData::new(self.history_obs.clone(), [1, seq_len, 4]),
-            &self.device
+            &self.device,
         );
         let act_tensor = Tensor::<Backend, 3>::from_data(
             TensorData::new(self.history_act.clone(), [1, seq_len, 1]),
-            &self.device
+            &self.device,
         );
 
         // Forward pass
@@ -209,7 +253,7 @@ impl AppState {
             curvature_weight: 0.5,
             recon_weight: 1.0,
         });
-        
+
         self.loss = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
 
         // Backward and Optimize with a smaller learning rate for stability
@@ -241,9 +285,12 @@ impl AppState {
         ctx.set_stroke_style_str("#f5a623");
         ctx.begin_path();
         ctx.move_to(cx, cy);
-        ctx.line_to(cx + self.pred_theta.sin() * len, cy - self.pred_theta.cos() * len);
+        ctx.line_to(
+            cx + self.pred_theta.sin() * len,
+            cy - self.pred_theta.cos() * len,
+        );
         ctx.stroke();
-        
+
         ctx.set_font("16px sans-serif");
         ctx.set_fill_style_str("#4a90e2");
         let _ = ctx.fill_text("Reality (Blue line)", 20.0, 40.0);
