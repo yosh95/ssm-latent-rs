@@ -1,0 +1,21 @@
+# Simulated data for industrial tools
+# In a real system, these would be fetched from an API or Database.
+
+diagnostics:
+  Conveyor_A:
+    health: "Poor"
+    last_check: "2026-03-27"
+    details: "High vibration detected."
+  Motor_B:
+    health: "Excellent"
+    last_check: "2026-03-26"
+    details: "Running within normal range."
+  Sensor_C:
+    health: "Fair"
+    last_check: "2026-03-25"
+    details: "Slight calibration drift."
+
+inventory:
+  Conveyor_A: { stock: 5, status: "Available" }
+  Motor_B: { stock: 0, status: "Out of Stock" }
+  Sensor_C: { stock: 12, status: "Available" }
