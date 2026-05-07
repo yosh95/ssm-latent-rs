@@ -49,7 +49,7 @@ impl LogEmbedder {
         let tokenizer_path = repo.get("tokenizer.json").unwrap();
         let tokenizer = Tokenizer::from_file(tokenizer_path).unwrap();
 
-        // CUDAの初期化を試み、失敗した場合は標準（CPU）セッションを使用
+        // Attempt to initialize CUDA; fall back to a standard (CPU) session if it fails
         let session = match Session::builder()
             .unwrap()
             .with_execution_providers([CUDAExecutionProvider::default().build()])
@@ -94,7 +94,7 @@ impl LogEmbedder {
             "attention_mask" => OrtTensor::from_array(attention_mask).unwrap(),
         ];
 
-        // セッションが期待する入力名を確認
+        // Check input names expected by the session
         let input_names: Vec<String> = self.session.inputs().iter().map(|i| i.name().to_string()).collect();
 
         if input_names.iter().any(|n| n == "token_type_ids") {
@@ -355,7 +355,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let use_pause = args.contains(&"--pause".to_string());
 
-    // WGPUは自動的に最適なバックエンド（Vulkan/Metal/DX12/etc）を選択する
+    // WGPU automatically selects the best available backend (Vulkan/Metal/DX12/etc)
     let device = WgpuDevice::default();
     println!(
         "\n{}=== SSM LOG WORLD MODEL: END-TO-END DEMO ==={}",
