@@ -11,7 +11,7 @@ use ort::session::Session;
 use ort::value::Tensor as OrtTensor;
 use rand::RngExt;
 use rand::seq::IndexedRandom;
-use ssm_latent_model::latent::LatentPredictor;
+use ssm_latent_model::latent::{LatentPredictor, LatentLossArgs};
 use ssm_latent_model::ssm::SsmConfig;
 use std::io::{self, Write};
 use std::thread::sleep;
@@ -428,8 +428,17 @@ fn main() {
     let lr = 1e-3;
 
     for epoch in 1..=200 {
-        let (z, pred_z, reconstructed_x) = model.forward(input_tensor.clone(), actions.clone());
-        let loss = model.loss(z, pred_z, reconstructed_x, input_tensor.clone(), 1.0, 1.0);
+        let (z, pred_z, reconstructed_x, predicted_x) = model.forward(input_tensor.clone(), actions.clone());
+        let loss = model.loss(LatentLossArgs {
+            z,
+            pred_z,
+            reconstructed_x,
+            predicted_x,
+            original_x: input_tensor.clone(),
+            stability_weight: 1.0,
+            curvature_weight: 1.0,
+            recon_weight: 1.0,
+        });
 
         let grads = loss.backward();
         let grads_params = burn::optim::GradientsParams::from_grads(grads, &model);
@@ -458,7 +467,7 @@ fn main() {
             TensorData::new(vec.clone(), [1, 1, emb_dim]),
             &device,
         );
-        let (_, _, reconstructed) =
+        let (_, _, reconstructed, _) =
             model.forward(log_tensor.clone(), Tensor::zeros([1, 1, 2], &device));
         let score: f32 = (log_tensor - reconstructed)
             .powf_scalar(2.0)
@@ -526,7 +535,7 @@ fn main() {
         let vec = embedder.embed(log);
         let log_tensor =
             Tensor::<MyBackend, 3>::from_data(TensorData::new(vec, [1, 1, emb_dim]), &device);
-        let (_, _, reconstructed) =
+        let (_, _, reconstructed, _) =
             model.forward(log_tensor.clone(), Tensor::zeros([1, 1, 2], &device));
         let score: f32 = (log_tensor - reconstructed)
             .powf_scalar(2.0)

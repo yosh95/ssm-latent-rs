@@ -1,7 +1,7 @@
 use crate::latent::stability_loss;
 use crate::ssm::{SsmBlock, SsmConfig};
 use burn::module::{Module, Param};
-use burn::nn::conv::{Conv2d, Conv2dConfig};
+use burn::nn::conv::{Conv2d, Conv2dConfig, ConvTranspose2d, ConvTranspose2dConfig};
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
@@ -17,12 +17,14 @@ impl<B: Backend> VisionEncoder<B> {
     pub fn new(channels: usize, d_model: usize, device: &B::Device) -> Self {
         let conv1 = Conv2dConfig::new([channels, 16], [3, 3])
             .with_stride([2, 2])
+            .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
             .init(device);
         let conv2 = Conv2dConfig::new([16, 32], [3, 3])
             .with_stride([2, 2])
+            .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
             .init(device);
-        // Input 16x16 -> 7x7 (conv1) -> 3x3 (conv2)
-        let linear = LinearConfig::new(32 * 3 * 3, d_model).init(device);
+        // Input 16x16 -> 8x8 (conv1) -> 4x4 (conv2)
+        let linear = LinearConfig::new(32 * 4 * 4, d_model).init(device);
 
         Self {
             conv1,
@@ -39,6 +41,49 @@ impl<B: Backend> VisionEncoder<B> {
         let [batch, channels, h, w] = x.dims();
         let x = x.reshape([batch, channels * h * w]);
         self.linear.forward(x)
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct VisionDecoder<B: Backend> {
+    linear: Linear<B>,
+    deconv1: ConvTranspose2d<B>,
+    deconv2: ConvTranspose2d<B>,
+    final_conv: Conv2d<B>,
+}
+
+impl<B: Backend> VisionDecoder<B> {
+    pub fn new(d_model: usize, channels: usize, device: &B::Device) -> Self {
+        let linear = LinearConfig::new(d_model, 32 * 4 * 4).init(device);
+        let deconv1 = ConvTranspose2dConfig::new([32, 16], [3, 3])
+            .with_stride([2, 2])
+            .with_padding([1, 1])
+            .with_padding_out([1, 1])
+            .init(device);
+        let deconv2 = ConvTranspose2dConfig::new([16, 8], [3, 3])
+            .with_stride([2, 2])
+            .with_padding([1, 1])
+            .with_padding_out([1, 1])
+            .init(device);
+        let final_conv = Conv2dConfig::new([8, channels], [1, 1]).init(device);
+
+        Self {
+            linear,
+            deconv1,
+            deconv2,
+            final_conv,
+        }
+    }
+
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 4> {
+        let x = self.linear.forward(x);
+        let [batch, _] = x.dims();
+        let x = x.reshape([batch, 32, 4, 4]);
+        let x = self.deconv1.forward(x);
+        let x = burn::tensor::activation::relu(x);
+        let x = self.deconv2.forward(x);
+        let x = burn::tensor::activation::relu(x);
+        self.final_conv.forward(x)
     }
 }
 
@@ -60,7 +105,7 @@ pub struct MultimodalLatentPredictor<B: Backend> {
     fusion: Linear<B>,
     ssm: SsmBlock<B>,
     // Decoders
-    vision_decoder: Linear<B>,
+    vision_decoder: VisionDecoder<B>,
     sensor_decoder: Linear<B>,
     // Stability projections
     stability_projections: Param<Tensor<B, 2>>,
@@ -83,7 +128,7 @@ impl<B: Backend> MultimodalLatentPredictor<B> {
         let fusion = LinearConfig::new(config.d_model * 3, config.d_model).init(device);
         let ssm = SsmBlock::new(config, device);
 
-        let vision_decoder = LinearConfig::new(config.d_model, img_channels * 16 * 16).init(device);
+        let vision_decoder = VisionDecoder::new(config.d_model, img_channels, device);
         let sensor_decoder = LinearConfig::new(config.d_model, sensor_dim).init(device);
 
         let stability_projections = Tensor::<B, 2>::random(
@@ -132,13 +177,11 @@ impl<B: Backend> MultimodalLatentPredictor<B> {
         let u = self.fusion.forward(fused);
         let predicted_z = self.ssm.forward(u);
 
-        let decoded_img = self.vision_decoder.forward(predicted_z.clone()).reshape([
-            batch,
-            seq_len,
-            self.img_size[0],
-            self.img_size[1],
-            self.img_size[2],
-        ]);
+        let pred_z_flat = predicted_z.clone().reshape([batch * seq_len, self.d_model]);
+        let decoded_img = self
+            .vision_decoder
+            .forward(pred_z_flat)
+            .reshape([batch, seq_len, channels, h, w]);
         let decoded_sensor = self.sensor_decoder.forward(predicted_z.clone());
 
         (z_vis, predicted_z, decoded_img, decoded_sensor)

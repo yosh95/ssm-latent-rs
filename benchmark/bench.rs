@@ -2,7 +2,7 @@ use burn::backend::{Autodiff, NdArray, Wgpu, ndarray::NdArrayDevice, wgpu::WgpuD
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::Tensor;
 use burn::tensor::backend::AutodiffBackend;
-use ssm_latent_model::latent::LatentPredictor;
+use ssm_latent_model::latent::{LatentPredictor, LatentLossArgs};
 use ssm_latent_model::ssm::SsmConfig;
 use std::time::Instant;
 
@@ -33,8 +33,17 @@ fn run_benchmark<B: AutodiffBackend>(device: B::Device, name: &str, epochs: usiz
             burn::tensor::Distribution::Default,
             &device,
         );
-        let (z, predicted_z, reconstructed_x) = model.forward(obs_data.clone(), action_data);
-        let loss = model.loss(z, predicted_z, reconstructed_x, obs_data, 1.0);
+        let (z, predicted_z, reconstructed_x, predicted_x) = model.forward(obs_data.clone(), action_data);
+        let loss = model.loss(LatentLossArgs {
+            z,
+            pred_z: predicted_z,
+            reconstructed_x,
+            predicted_x,
+            original_x: obs_data,
+            stability_weight: 1.0,
+            curvature_weight: 0.5,
+            recon_weight: 1.0,
+        });
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
         model = optim.step(2e-3, model, grads);
@@ -54,8 +63,17 @@ fn run_benchmark<B: AutodiffBackend>(device: B::Device, name: &str, epochs: usiz
             &device,
         );
 
-        let (z, predicted_z, reconstructed_x) = model.forward(obs_data.clone(), action_data);
-        let loss = model.loss(z, predicted_z, reconstructed_x, obs_data, 1.0);
+        let (z, predicted_z, reconstructed_x, predicted_x) = model.forward(obs_data.clone(), action_data);
+        let loss = model.loss(LatentLossArgs {
+            z,
+            pred_z: predicted_z,
+            reconstructed_x,
+            predicted_x,
+            original_x: obs_data,
+            stability_weight: 1.0,
+            curvature_weight: 0.5,
+            recon_weight: 1.0,
+        });
 
         let grads = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);

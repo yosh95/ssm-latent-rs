@@ -4177,6 +4177,7 @@ dependencies = [
  "ndarray 0.17.2",
  "ort-sys",
  "smallvec",
+ "tracing",
  "ureq 3.3.0",
 ]
 

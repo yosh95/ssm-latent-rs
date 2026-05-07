@@ -23,6 +23,17 @@ pub struct LatentPredictor<B: Backend> {
     d_model: usize,
 }
 
+pub struct LatentLossArgs<B: Backend> {
+    pub z: Tensor<B, 3>,
+    pub pred_z: Tensor<B, 3>,
+    pub reconstructed_x: Tensor<B, 3>,
+    pub predicted_x: Tensor<B, 3>,
+    pub original_x: Tensor<B, 3>,
+    pub stability_weight: f64,
+    pub curvature_weight: f64,
+    pub recon_weight: f64,
+}
+
 use burn::record::Recorder;
 
 impl<B: Backend> LatentPredictor<B> {
@@ -78,14 +89,19 @@ impl<B: Backend> LatentPredictor<B> {
         &self,
         observations: Tensor<B, 3>,
         actions: Tensor<B, 3>,
-    ) -> (Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>) {
+    ) -> (Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>) {
         let z = self.encoder.forward(observations);
         let a = self.action_encoder.forward(actions);
         let u_concat = Tensor::cat(vec![z.clone(), a], 2);
         let u = self.fusion.forward(u_concat);
         let predicted_z = self.ssm.forward(u);
+
+        // Reconstruction from current latent (representation quality)
         let reconstructed_x = self.decoder.forward(z.clone());
-        (z, predicted_z, reconstructed_x)
+        // Preview reconstruction from predicted latent (prediction quality in pixel space)
+        let predicted_x = self.decoder.forward(predicted_z.clone());
+
+        (z, predicted_z, reconstructed_x, predicted_x)
     }
 
     pub fn step(
@@ -135,32 +151,33 @@ impl<B: Backend> LatentPredictor<B> {
         Ok(self.load_record(record))
     }
 
-    pub fn loss(
-        &self,
-        z: Tensor<B, 3>,
-        pred_z: Tensor<B, 3>,
-        reconstructed_x: Tensor<B, 3>,
-        original_x: Tensor<B, 3>,
-        stability_weight: f64,
-        curvature_weight: f64,
-    ) -> Tensor<B, 1> {
-        let [batch, seq_len, _] = z.dims();
-        let target_z = z.clone().detach().slice([0..batch, 1..seq_len]);
-        let pred_slice = pred_z.slice([0..batch, 0..seq_len - 1]);
+    pub fn loss(&self, args: LatentLossArgs<B>) -> Tensor<B, 1> {
+        let [batch, seq_len, _] = args.z.dims();
+        let target_z = args.z.clone().detach().slice([0..batch, 1..seq_len]);
+        let pred_slice = args.pred_z.clone().slice([0..batch, 0..seq_len - 1]);
 
         let mse_latent = (target_z - pred_slice).powf_scalar(2.0).mean();
-        let mse_recons = (original_x - reconstructed_x).powf_scalar(2.0).mean();
+
+        // Reconstruction from current
+        let mse_recons = (args.original_x.clone() - args.reconstructed_x)
+            .powf_scalar(2.0)
+            .mean();
+        // Reconstruction from predicted (next obs)
+        let target_x = args.original_x.detach().slice([0..batch, 1..seq_len]);
+        let pred_x_slice = args.predicted_x.slice([0..batch, 0..seq_len - 1]);
+        let mse_pred_x = (target_x - pred_x_slice).powf_scalar(2.0).mean();
 
         // Efficient O(T) stability loss via Gaussian moment matching
-        let reg_loss = stability_loss(z.clone(), self.stability_projections.val());
+        let reg_loss = stability_loss(args.z.clone(), self.stability_projections.val());
 
         // Temporal Straightening: Reduce curvature to improve planning stability
-        let curv_loss = curvature_loss(z);
+        let curv_loss = curvature_loss(args.z);
 
         mse_latent
-            + mse_recons
-            + reg_loss.mul_scalar(stability_weight)
-            + curv_loss.mul_scalar(curvature_weight)
+            + mse_recons.mul_scalar(args.recon_weight)
+            + mse_pred_x.mul_scalar(args.recon_weight)
+            + reg_loss.mul_scalar(args.stability_weight)
+            + curv_loss.mul_scalar(args.curvature_weight)
     }
 }
 

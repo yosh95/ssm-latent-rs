@@ -3,7 +3,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlButtonElement};
 use burn::tensor::{Tensor, TensorData};
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-use ssm_latent_model::latent::{LatentPredictor, LatentState};
+use ssm_latent_model::latent::{LatentPredictor, LatentState, LatentLossArgs};
 use ssm_latent_model::ssm::SsmConfig;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -198,8 +198,17 @@ impl AppState {
         );
 
         // Forward pass
-        let (z, pred_z, recons_x) = self.model.forward(obs_tensor.clone(), act_tensor);
-        let loss = self.model.loss(z, pred_z, recons_x, obs_tensor, 0.05);
+        let (z, pred_z, recons_x, pred_x) = self.model.forward(obs_tensor.clone(), act_tensor);
+        let loss = self.model.loss(LatentLossArgs {
+            z,
+            pred_z,
+            reconstructed_x: recons_x,
+            predicted_x: pred_x,
+            original_x: obs_tensor,
+            stability_weight: 0.05,
+            curvature_weight: 0.5,
+            recon_weight: 1.0,
+        });
         
         self.loss = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
 

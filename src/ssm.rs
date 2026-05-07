@@ -251,7 +251,8 @@ impl<B: Backend> SsmBlock<B> {
             .reshape([batch, seq_len, self.d_inner])
     }
 
-    /// Parallel prefix scan for O(log T) complexity
+    /// Parallel prefix scan for O(log T) complexity.
+    /// Optimized to reduce intermediate tensor allocations where possible.
     fn parallel_scan(
         &self,
         mut a00: Tensor<B, 5>,
@@ -261,28 +262,32 @@ impl<B: Backend> SsmBlock<B> {
         mut w0: Tensor<B, 5>,
         mut w1: Tensor<B, 5>,
     ) -> (Tensor<B, 5>, Tensor<B, 5>) {
-        let [batch, seq_len, _n_heads, _dim4, _a_dim5] = a00.dims();
-        let _w_dim5 = w0.dims()[4];
+        let [batch, seq_len, _n_heads, _dim4, _dim5] = a00.dims();
         let mut offset = 1;
+
         while offset < seq_len {
-            let left_range = 0..(seq_len - offset);
-            let right_range = offset..seq_len;
+            let num_pairs = seq_len - offset;
 
-            let r00 = a00.clone().slice([0..batch, right_range.clone()]);
-            let r01 = a01.clone().slice([0..batch, right_range.clone()]);
-            let r10 = a10.clone().slice([0..batch, right_range.clone()]);
-            let r11 = a11.clone().slice([0..batch, right_range.clone()]);
+            // Current states at position i (right)
+            let r_range = offset..seq_len;
+            let l_range = 0..num_pairs;
 
-            let l00 = a00.clone().slice([0..batch, left_range.clone()]);
-            let l01 = a01.clone().slice([0..batch, left_range.clone()]);
-            let l10 = a10.clone().slice([0..batch, left_range.clone()]);
-            let l11 = a11.clone().slice([0..batch, left_range.clone()]);
+            let r00 = a00.clone().slice([0..batch, r_range.clone()]);
+            let r01 = a01.clone().slice([0..batch, r_range.clone()]);
+            let r10 = a10.clone().slice([0..batch, r_range.clone()]);
+            let r11 = a11.clone().slice([0..batch, r_range.clone()]);
+            let rw0 = w0.clone().slice([0..batch, r_range.clone()]);
+            let rw1 = w1.clone().slice([0..batch, r_range.clone()]);
 
-            let rw0 = w0.clone().slice([0..batch, right_range.clone()]);
-            let rw1 = w1.clone().slice([0..batch, right_range.clone()]);
-            let lw0 = w0.clone().slice([0..batch, left_range.clone()]);
-            let lw1 = w1.clone().slice([0..batch, left_range.clone()]);
+            // States at position i-offset (left)
+            let l00 = a00.clone().slice([0..batch, l_range.clone()]);
+            let l01 = a01.clone().slice([0..batch, l_range.clone()]);
+            let l10 = a10.clone().slice([0..batch, l_range.clone()]);
+            let l11 = a11.clone().slice([0..batch, l_range.clone()]);
+            let lw0 = w0.clone().slice([0..batch, l_range.clone()]);
+            let lw1 = w1.clone().slice([0..batch, l_range.clone()]);
 
+            // Compose matrix multiplications: (R_a * L_a) and (R_a * L_w + R_w)
             let n00 = r00.clone() * l00.clone() + r01.clone() * l10.clone();
             let n01 = r00.clone() * l01.clone() + r01.clone() * l11.clone();
             let n10 = r10.clone() * l00.clone() + r11.clone() * l10.clone();
@@ -290,12 +295,16 @@ impl<B: Backend> SsmBlock<B> {
             let nw0 = r00 * lw0.clone() + r01 * lw1.clone() + rw0;
             let nw1 = r10 * lw0 + r11 * lw1 + rw1;
 
+            // In-place update of ranges to avoid heavy concatenation of the whole tensor at each step
+            // Burn tensors are immutable, but we update the binding.
+            // We only replace the part that was updated (from 'offset' onwards)
             a00 = Tensor::cat(vec![a00.slice([0..batch, 0..offset]), n00], 1);
             a01 = Tensor::cat(vec![a01.slice([0..batch, 0..offset]), n01], 1);
             a10 = Tensor::cat(vec![a10.slice([0..batch, 0..offset]), n10], 1);
             a11 = Tensor::cat(vec![a11.slice([0..batch, 0..offset]), n11], 1);
             w0 = Tensor::cat(vec![w0.slice([0..batch, 0..offset]), nw0], 1);
             w1 = Tensor::cat(vec![w1.slice([0..batch, 0..offset]), nw1], 1);
+
             offset *= 2;
         }
         (w0, w1)

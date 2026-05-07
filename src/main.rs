@@ -3,7 +3,7 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::Tensor;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
-use ssm_latent_model::latent::{LatentPredictor, LatentState};
+use ssm_latent_model::latent::{LatentPredictor, LatentState, LatentLossArgs};
 use ssm_latent_model::ssm::SsmConfig;
 use std::thread::sleep;
 use std::time::Duration;
@@ -170,8 +170,18 @@ fn main() {
             &device,
         );
 
-        let (z, predicted_z, reconstructed_x) = explorer.forward(obs_data.clone(), action_data);
-        let loss = explorer.loss(z, predicted_z, reconstructed_x, obs_data, 1.2, 0.5);
+        let (z, predicted_z, reconstructed_x, predicted_x) =
+            explorer.forward(obs_data.clone(), action_data);
+        let loss = explorer.loss(LatentLossArgs {
+            z,
+            pred_z: predicted_z,
+            reconstructed_x,
+            predicted_x,
+            original_x: obs_data,
+            stability_weight: 1.2,
+            curvature_weight: 0.5,
+            recon_weight: 1.0,
+        });
 
         let current_loss: f32 = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
 
