@@ -173,15 +173,13 @@ pub fn curvature_loss<B: Backend>(z: Tensor<B, 3>) -> Tensor<B, 1> {
         return Tensor::<B, 1>::from_data([0.0], &z.device());
     }
 
-    // Velocity: v_t = z_t - z_{t-1}
-    let z_curr = z.clone().slice([0..batch, 1..seq_len]);
-    let z_prev = z.clone().slice([0..batch, 0..seq_len - 1]);
-    let velocity = z_curr - z_prev;
+    // Direct second-order finite difference: a_t = z_t - 2z_{t-1} + z_{t-2}
+    // This reduces the number of intermediate tensors and slice operations.
+    let z_t = z.clone().slice([0..batch, 2..seq_len]);
+    let z_t_1 = z.clone().slice([0..batch, 1..seq_len - 1]);
+    let z_t_2 = z.slice([0..batch, 0..seq_len - 2]);
 
-    // Acceleration (Curvature): a_t = v_t - v_{t-1}
-    let v_curr = velocity.clone().slice([0..batch, 1..seq_len - 1]);
-    let v_prev = velocity.slice([0..batch, 0..seq_len - 2]);
-    let acceleration = v_curr - v_prev;
+    let acceleration = z_t - z_t_1.mul_scalar(2.0) + z_t_2;
 
     acceleration.powf_scalar(2.0).mean().unsqueeze()
 }
