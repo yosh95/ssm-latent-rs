@@ -171,7 +171,7 @@ fn main() {
         );
 
         let (z, predicted_z, reconstructed_x) = explorer.forward(obs_data.clone(), action_data);
-        let loss = explorer.loss(z, predicted_z, reconstructed_x, obs_data, 1.2);
+        let loss = explorer.loss(z, predicted_z, reconstructed_x, obs_data, 1.2, 0.5);
 
         let current_loss: f32 = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
 

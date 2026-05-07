@@ -151,7 +151,9 @@ impl<B: Backend> MultimodalLatentPredictor<B> {
 
         let mse_latent = (target_z - pred_slice).powf_scalar(2.0).mean();
         let mse_img = (input.orig_img - input.recons_img).powf_scalar(2.0).mean();
-        let mse_sens = (input.orig_sens - input.recons_sens).powf_scalar(2.0).mean();
+        let mse_sens = (input.orig_sens - input.recons_sens)
+            .powf_scalar(2.0)
+            .mean();
 
         let reg_loss = stability_loss(input.z, self.stability_projections.val());
 

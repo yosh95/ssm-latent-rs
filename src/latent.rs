@@ -142,6 +142,7 @@ impl<B: Backend> LatentPredictor<B> {
         reconstructed_x: Tensor<B, 3>,
         original_x: Tensor<B, 3>,
         stability_weight: f64,
+        curvature_weight: f64,
     ) -> Tensor<B, 1> {
         let [batch, seq_len, _] = z.dims();
         let target_z = z.clone().detach().slice([0..batch, 1..seq_len]);
@@ -151,10 +152,38 @@ impl<B: Backend> LatentPredictor<B> {
         let mse_recons = (original_x - reconstructed_x).powf_scalar(2.0).mean();
 
         // Efficient O(T) stability loss via Gaussian moment matching
-        let reg_loss = stability_loss(z, self.stability_projections.val());
+        let reg_loss = stability_loss(z.clone(), self.stability_projections.val());
 
-        mse_latent + mse_recons + reg_loss.mul_scalar(stability_weight)
+        // Temporal Straightening: Reduce curvature to improve planning stability
+        let curv_loss = curvature_loss(z);
+
+        mse_latent
+            + mse_recons
+            + reg_loss.mul_scalar(stability_weight)
+            + curv_loss.mul_scalar(curvature_weight)
     }
+}
+
+/// Temporal Straightening loss: minimizes the second-order finite difference
+/// of the latent trajectory to encourage locally straight paths.
+pub fn curvature_loss<B: Backend>(z: Tensor<B, 3>) -> Tensor<B, 1> {
+    let [batch, seq_len, _] = z.dims();
+
+    if seq_len < 3 {
+        return Tensor::<B, 1>::from_data([0.0], &z.device());
+    }
+
+    // Velocity: v_t = z_t - z_{t-1}
+    let z_curr = z.clone().slice([0..batch, 1..seq_len]);
+    let z_prev = z.clone().slice([0..batch, 0..seq_len - 1]);
+    let velocity = z_curr - z_prev;
+
+    // Acceleration (Curvature): a_t = v_t - v_{t-1}
+    let v_curr = velocity.clone().slice([0..batch, 1..seq_len - 1]);
+    let v_prev = velocity.slice([0..batch, 0..seq_len - 2]);
+    let acceleration = v_curr - v_prev;
+
+    acceleration.powf_scalar(2.0).mean().unsqueeze()
 }
 
 /// Gaussian-based O(T) stability loss to prevent representation collapse in JEPA

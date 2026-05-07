@@ -185,7 +185,7 @@ fn main() {
 
     for epoch in 1..=200 {
         let (z, pred_z, reconstructed_x) = model.forward(input_tensor.clone(), actions.clone());
-        let loss = model.loss(z, pred_z, reconstructed_x, input_tensor.clone(), 1.0);
+        let loss = model.loss(z, pred_z, reconstructed_x, input_tensor.clone(), 1.0, 1.0);
         
         let grads = loss.backward();
         let grads_params = burn::optim::GradientsParams::from_grads(grads, &model);
