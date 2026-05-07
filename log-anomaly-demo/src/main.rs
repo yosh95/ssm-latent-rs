@@ -131,6 +131,143 @@ fn pause_if_enabled(enabled: bool, message: &str) {
     io::stdin().read_line(&mut _s).unwrap();
 }
 
+// ---------------------------------------------------------------------------
+// Adaptive Anomaly Threshold: MAD (calibration) + EWMA (online tracking)
+// ---------------------------------------------------------------------------
+
+/// Compute the Median Absolute Deviation (MAD) of a slice of f32 scores.
+fn mad(scores: &[f32]) -> f32 {
+    let mut sorted = scores.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+    let mut deviations: Vec<f32> = sorted.iter().map(|&x| (x - median).abs()).collect();
+    deviations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    deviations[deviations.len() / 2]
+}
+
+/// Compute a robust threshold using MAD: median + k * 1.4826 * MAD.
+/// The constant 1.4826 makes MAD consistent with standard deviation for normal distributions.
+fn compute_mad_threshold(scores: &[f32], k: f32) -> f32 {
+    let mut sorted = scores.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+    let mut deviations: Vec<f32> = sorted.iter().map(|&x| (x - median).abs()).collect();
+    deviations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mad_val = deviations[deviations.len() / 2];
+    median + k * 1.4826 * mad_val
+}
+
+/// Exponential Weighted Moving Average threshold tracker.
+/// Updates mean and variance online with O(1) memory, suitable for edge/streaming use.
+struct EwmaThreshold {
+    mean: f64,
+    var: f64,
+    alpha: f64,
+    k: f64,
+    warmup: usize,
+    count: usize,
+}
+
+impl EwmaThreshold {
+    fn new(alpha: f64, k: f64, warmup: usize, initial_mean: f64, initial_var: f64) -> Self {
+        Self {
+            mean: initial_mean,
+            var: initial_var,
+            alpha,
+            k,
+            warmup,
+            count: 0,
+        }
+    }
+
+    /// Return the current EWMA-based threshold without updating any statistics.
+    /// Returns `f32::NAN` during the warmup period.
+    fn current_threshold(&self) -> f32 {
+        if self.count < self.warmup {
+            return f32::NAN;
+        }
+        let std = self.var.max(0.0).sqrt() as f32;
+        (self.mean + self.k * std as f64) as f32
+    }
+
+    /// Update EWMA statistics with a new observation (no anomaly decision).
+    fn observe(&mut self, score: f32) {
+        let s = score as f64;
+        self.count += 1;
+        let old_mean = self.mean;
+        self.mean = self.alpha * s + (1.0 - self.alpha) * self.mean;
+        let delta = s - old_mean;
+        self.var = self.alpha * delta * (s - self.mean) + (1.0 - self.alpha) * self.var;
+    }
+
+    
+}
+
+/// Hybrid adaptive threshold combining MAD-based calibration with EWMA online tracking.
+/// - Initial threshold is set via MAD on training reconstruction scores (robust to outliers).
+/// - Online phase uses EWMA to track distribution drift.
+/// - Only **normal** observations update the EWMA, preventing anomaly contamination.
+/// - The adaptive threshold never drops below the MAD baseline (hard floor).
+struct HybridAdaptiveThreshold {
+    baseline_threshold: f32,
+    ewma: EwmaThreshold,
+}
+
+impl HybridAdaptiveThreshold {
+    /// Build from calibration scores (training reconstruction errors).
+    /// - `k_mad`: sensitivity for MAD-based initial threshold (default 3.0)
+    /// - `alpha`: EWMA smoothing factor (0.05–0.2; smaller = more stable)
+    /// - `k_ewma`: sensitivity for EWMA online threshold (default 3.0)
+    ///
+    /// The baseline is the **maximum** of the MAD threshold and mean*4.0,
+    /// so it is never weaker than the old hardcoded threshold.
+    fn from_calibration(
+        scores: &[f32],
+        k_mad: f32,
+        alpha: f64,
+        k_ewma: f64,
+    ) -> Self {
+        let mad_threshold = compute_mad_threshold(scores, k_mad);
+        let mean = scores.iter().sum::<f32>() / scores.len() as f32;
+        let old_threshold = mean * 4.0;
+        // Take the higher of the two so we never regress below the old threshold
+        let baseline = mad_threshold.max(old_threshold);
+        let var = scores
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f32>()
+            / scores.len() as f32;
+        Self {
+            baseline_threshold: baseline,
+            ewma: EwmaThreshold::new(alpha, k_ewma, 10, mean as f64, var as f64),
+        }
+    }
+
+    /// Classify `score` as normal or anomalous.
+    /// - Anomalous scores are **not** fed into the EWMA (prevents contamination).
+    /// - The effective threshold is the maximum of the EWMA threshold and
+    ///   the MAD baseline — the threshold can only rise, never fall below baseline.
+    fn update_and_check(&mut self, score: f32) -> (f32, bool) {
+        // Peek at the EWMA threshold before deciding
+        let ewma_thresh = self.ewma.current_threshold();
+        let threshold = if ewma_thresh.is_nan() {
+            self.baseline_threshold
+        } else {
+            // The threshold can only rise; it never drops below baseline
+            ewma_thresh.max(self.baseline_threshold)
+        };
+
+        let is_anomaly = score > threshold;
+
+        // Only feed normal observations into the EWMA to keep it clean
+        if !is_anomaly {
+            self.ewma.observe(score);
+        }
+
+        (threshold, is_anomaly)
+    }
+}
+
 fn generate_logs_in_memory() -> (Vec<String>, Vec<String>) {
     let mut rng = rand::rng();
     let users = [
@@ -309,27 +446,78 @@ fn main() {
         }
     }
 
-    let (_, _, reconstructed) = model.forward(input_tensor.clone(), actions);
-    let mse: f32 = (input_tensor - reconstructed)
-        .powf_scalar(2.0)
-        .mean()
-        .into_data()
-        .as_slice::<f32>()
-        .unwrap()[0];
-    let threshold = mse * 4.0;
+    // --- STEP 2b: CALIBRATION ---
+    // Compute per-sample reconstruction scores on training data for MAD-based threshold
     println!(
-        "\nCalibration DONE. Dynamic Threshold: {}{:.6}{}",
-        YELLOW, threshold, RESET
+        "\n{}[Step 2b/4]{} Calibrating adaptive threshold (MAD + EWMA)...",
+        BOLD, RESET
+    );
+    let mut calibration_scores: Vec<f32> = Vec::new();
+    for (i, vec) in train_vecs.iter().enumerate() {
+        let log_tensor = Tensor::<MyBackend, 3>::from_data(
+            TensorData::new(vec.clone(), [1, 1, emb_dim]),
+            &device,
+        );
+        let (_, _, reconstructed) =
+            model.forward(log_tensor.clone(), Tensor::zeros([1, 1, 2], &device));
+        let score: f32 = (log_tensor - reconstructed)
+            .powf_scalar(2.0)
+            .mean()
+            .into_data()
+            .as_slice::<f32>()
+            .unwrap()[0];
+        calibration_scores.push(score);
+        if i < 10 {
+            println!("  calibration sample {:>3}: score = {:.6}", i, score);
+        }
+    }
+
+    let mut threshold_engine = HybridAdaptiveThreshold::from_calibration(
+        &calibration_scores,
+        3.0,   // k_mad: MAD sensitivity (3.0 ≈ 99.7% for normal dist)
+        0.1,   // alpha: EWMA smoothing (0.1 = moderate adaptivity)
+        3.0,   // k_ewma: EWMA sensitivity
+    );
+
+    let baseline = threshold_engine.baseline_threshold;
+    let cal_mean = calibration_scores.iter().sum::<f32>() / calibration_scores.len() as f32;
+    let cal_std = {
+        let variance = calibration_scores
+            .iter()
+            .map(|&x| (x - cal_mean).powi(2))
+            .sum::<f32>()
+            / calibration_scores.len() as f32;
+        variance.sqrt()
+    };
+    let old_hardcoded_threshold = cal_mean * 4.0;
+    println!(
+        "  Calibration statistics: mean={:.6}, std={:.6}, median={:.6}, MAD={:.6}",
+        cal_mean,
+        cal_std,
+        {
+            let mut s = calibration_scores.clone();
+            s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            s[s.len() / 2]
+        },
+        mad(&calibration_scores),
+    );
+    println!(
+        "  {}Baseline threshold (MAD): {:.6}{}",
+        YELLOW, baseline, RESET
+    );
+    println!(
+        "  (old hardcoded: mean*4.0 = {:.6})",
+        old_hardcoded_threshold
     );
     pause_if_enabled(use_pause, "Start inference?");
 
     // --- STEP 3: INFERENCE ---
-    println!("\n{}[Step 3/4]{} Real-time Inference...", BOLD, RESET);
+    println!("\n{}[Step 3/4]{} Real-time Inference (Adaptive Threshold)...", BOLD, RESET);
     println!(
-        "{:<4} | {:<8} | {:<5} | {:<50}",
-        "IDX", "MSE", "RES", "LOG SAMPLE"
+        "{:<4} | {:<8} | {:<8} | {:<5} | {:<50}",
+        "IDX", "MSE", "THRESH", "RES", "LOG SAMPLE"
     );
-    println!("{}", "-".repeat(85));
+    println!("{}", "-".repeat(95));
 
     let mut tp = 0;
     let mut fp = 0;
@@ -350,7 +538,9 @@ fn main() {
         // Revised anomaly criteria: An anomaly is a log that doesn't follow the typical "INFO: [svc] ACT..." pattern
         let actual_anomaly =
             !log.contains("] ") || log.contains("CRITICAL") || log.contains("spike");
-        let predicted_anomaly = score > threshold;
+
+        // Adaptive threshold: MAD baseline + EWMA online tracking
+        let (current_threshold, predicted_anomaly) = threshold_engine.update_and_check(score);
 
         let (tag, color) = match (actual_anomaly, predicted_anomaly) {
             (true, true) => {
@@ -369,14 +559,15 @@ fn main() {
         };
 
         println!(
-            "{:<4} | {:>8.6} | {}{:<3}{} | {}{}{}",
+            "{:<4} | {:>8.6} | {:>8.6} | {}{:<3}{} | {}{}{}",
             i,
             score,
+            current_threshold,
             color,
             tag,
             RESET,
             color,
-            if log.len() > 60 { &log[..60] } else { log },
+            if log.len() > 50 { &log[..50] } else { log },
             RESET
         );
 
@@ -417,7 +608,7 @@ fn main() {
         0.0
     };
 
-    println!("\n{}[Step 4/4]{} Final Report", BOLD, RESET);
+    println!("\n{}[Step 4/4]{} Final Report (Adaptive Threshold: MAD+EWMA)", BOLD, RESET);
     println!("-------------------------------------------");
     println!("{:<20} : {}{:.4}{}", "Precision", GREEN, precision, RESET);
     println!("{:<20} : {}{:.4}{}", "Recall", GREEN, recall, RESET);
@@ -438,6 +629,19 @@ fn main() {
         fp,
         60 - (tp + fp + fn_count),
         fn_count
+    );
+    println!("-------------------------------------------");
+    println!(
+        "{:<20} : {:.6}",
+        "Baseline (MAD k=3)", baseline
+    );
+    println!(
+        "{:<20} : {:.6}",
+        "Old (mean*4.0)", old_hardcoded_threshold
+    );
+    println!(
+        "{:<20} : {:.6}",
+        "Calibration Mean±Std", cal_mean
     );
     println!("\nSemantic Anomaly Detection complete.");
 }
