@@ -73,6 +73,41 @@ Run equivalence tests (Parallel vs Sequential):
 cargo test
 ```
 
+## Configuration
+
+The project uses a `config.toml` file to control model architecture and training hyperparameters:
+
+```toml
+[model]
+d_model = 64       # Latent dimension
+d_state = 16       # State dimension for SSM
+expand = 2         # Expansion factor for inner dimension
+n_heads = 4        # Number of heads (MIMO)
+mimo_rank = 1      # MIMO rank (d_head must be divisible by this)
+use_conv = true    # Enable conv1d before SSM
+conv_kernel = 4    # Kernel size for conv1d
+
+[train]
+learning_rate = 1e-3
+epochs = 120
+batch_size = 4
+seq_len = 32
+stability_weight = 1.0   # Weight for stability regularizer
+curvature_weight = 0.5   # Weight for temporal straightening
+recon_weight = 1.0       # Weight for reconstruction loss
+
+[anomaly]
+k_mad = 3.0              # MAD sensitivity for anomaly threshold
+alpha_ewma = 0.1         # EWMA smoothing factor
+k_ewma = 3.0             # EWMA sensitivity for anomaly threshold
+```
+
+### Parameter Descriptions
+
+- **`[model]`**: Architecture of the SSM block. `d_model` is the core latent dimension; `d_state` controls the state size of the SSM dynamics.
+- **`[train]`**: Training hyperparameters. The `stability_weight` and `curvature_weight` control the strength of the representation collapse prevention and temporal straightening regularizers, respectively.
+- **`[anomaly]`**: (Log anomaly demo only) Parameters for the hybrid adaptive anomaly threshold using MAD calibration and EWMA online tracking.
+
 ## References
 
 - Lahoti, A., Li, K. Y., Chen, B., Wang, C., Bick, A., Kolter, J. Z., Dao, T., & Gu, A. (2026). Mamba-3: Improved Sequence Modeling using State Space Principles. *arXiv preprint arXiv:2603.15569*. [https://arxiv.org/abs/2603.15569](https://arxiv.org/abs/2603.15569)
