@@ -381,8 +381,8 @@ fn main() {
 
     // --- STEP 1: LOAD DATA ---
     println!("\n{}[Step 1/4]{} Model Initialization...", BOLD, RESET);
-    let mut embedder = LogEmbedder::new("sentence-transformers/all-MiniLM-L6-v2");
-    // let mut embedder = LogEmbedder::new("onnx-community/harrier-oss-v1-0.6b-ONNX");
+    // let mut embedder = LogEmbedder::new("sentence-transformers/all-MiniLM-L6-v2");
+    let mut embedder = LogEmbedder::new("intfloat/multilingual-e5-small");
 
     // デバッグ: ベクトル次元数を確認
     let test_emb = embedder.embed("test");
