@@ -1,15 +1,23 @@
+#[cfg(feature = "ort")]
 use anyhow::{Context, Result};
 use burn::tensor::{Tensor, backend::Backend};
+
+#[cfg(feature = "ort")]
 use ndarray::{Array2, Axis};
+#[cfg(feature = "ort")]
 use ort::session::Session;
+#[cfg(feature = "ort")]
 use ort::value::Tensor as OrtTensor;
+#[cfg(feature = "ort")]
 use tokenizers::Tokenizer;
 
+#[cfg(feature = "ort")]
 pub struct LogEmbedder {
     session: Session,
     tokenizer: Tokenizer,
 }
 
+#[cfg(feature = "ort")]
 impl LogEmbedder {
     pub fn new(model_path: &str, tokenizer_path: &str) -> Result<Self> {
         let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(|e| {

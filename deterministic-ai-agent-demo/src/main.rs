@@ -105,7 +105,7 @@ fn main() -> Result<()> {
         let states = encoder.get_hidden_states(&item.input)?;
         ner_embeddings_list.push(states);
     }
-    
+
     // Simplification: use the first item's sequence length to stack for demo
     // In real NER we'd handle variable lengths
     let first_seq_len = ner_embeddings_list[0].dims()[0];
@@ -113,7 +113,7 @@ fn main() -> Result<()> {
     for emb in ner_embeddings_list {
         if emb.dims()[0] >= first_seq_len {
             // [Seq_Len, Dim] -> [1, Seq_Len, Dim]
-            truncated_ner_embs.push(emb.slice([0..first_seq_len]).unsqueeze());
+            truncated_ner_embs.push(emb.slice(0..first_seq_len).unsqueeze());
         }
     }
     let train_ner_embeddings = Tensor::<Backend, 3>::cat(truncated_ner_embs, 0);
@@ -122,13 +122,8 @@ fn main() -> Result<()> {
 
     let ner_config = NERClassifierConfig::new(dim, 3);
     let ner_classifier = ner_config.init::<Backend>(&device);
-    let _ner_classifier = trainer.train_ner::<Backend>(
-        ner_classifier,
-        train_ner_embeddings,
-        ner_labels,
-        50,
-        1e-3,
-    );
+    let _ner_classifier =
+        trainer.train_ner::<Backend>(ner_classifier, train_ner_embeddings, ner_labels, 50, 1e-3);
     println!("NER Training completed.");
 
     // 5. Initialize Engine and Run Inference
@@ -139,7 +134,7 @@ fn main() -> Result<()> {
     ner_extractor.register_device("Conveyor_A", &encoder)?;
     ner_extractor.register_device("Conveyor_B", &encoder)?;
 
-    // Use Inner Backend for inference engine to avoid overhead if needed, 
+    // Use Inner Backend for inference engine to avoid overhead if needed,
     // but here we can just keep using Backend.
     let engine = AgentEngine::new(encoder, intent_classifier, ner_extractor, None)?;
 

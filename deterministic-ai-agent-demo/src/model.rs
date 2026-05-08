@@ -12,7 +12,6 @@ pub struct IntentClassifier<B: Backend> {
     fc1: Linear<B>,
     fc2: Linear<B>,
     relu: Relu,
-    #[module(retain = false)]
     centroids: Option<Tensor<B, 2>>,
 }
 

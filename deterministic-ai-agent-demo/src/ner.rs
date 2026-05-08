@@ -39,7 +39,8 @@ impl<B: Backend> NERExtractor<B> {
         for (i, token) in tokens.iter().enumerate().take(seq_len) {
             #[allow(clippy::single_range_in_vec_init)]
             // slice([i..i+1]) → [1, dim]; drop the singleton row axis → [dim]
-            let token_emb: Tensor<B, 1> = hidden_states.clone().slice([i..i + 1]).squeeze_dims(&[0]);
+            let token_emb: Tensor<B, 1> =
+                hidden_states.clone().slice([i..i + 1]).squeeze_dims(&[0]);
             if let Some((name, _sim)) = self.matcher.match_entity(token, &token_emb) {
                 // In this demo, we use "device" as the only parameter key
                 results.insert("device".to_string(), name);

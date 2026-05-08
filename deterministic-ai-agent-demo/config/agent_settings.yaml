@@ -1,7 +1,0 @@
-engine:
-  thresholds:
-    confidence: 0.70
-    ood: 0.88
-  logging:
-    structured: true
-    level: "INFO"

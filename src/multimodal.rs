@@ -17,11 +17,11 @@ impl<B: Backend> VisionEncoder<B> {
     pub fn new(channels: usize, d_model: usize, device: &B::Device) -> Self {
         let conv1 = Conv2dConfig::new([channels, 16], [3, 3])
             .with_stride([2, 2])
-            .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
+            .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
         let conv2 = Conv2dConfig::new([16, 32], [3, 3])
             .with_stride([2, 2])
-            .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
+            .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1, 1, 1))
             .init(device);
         // Input 16x16 -> 8x8 (conv1) -> 4x4 (conv2)
         let linear = LinearConfig::new(32 * 4 * 4, d_model).init(device);

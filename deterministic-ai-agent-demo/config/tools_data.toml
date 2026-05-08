@@ -1,0 +1,11 @@
+[[tools]]
+status = "Available"
+stock = 5
+
+[[tools]]
+status = "Out of Stock"
+stock = 0
+
+[[tools]]
+status = "Available"
+stock = 12

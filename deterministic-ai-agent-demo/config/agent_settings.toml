@@ -1,0 +1,3 @@
+[engine.thresholds]
+confidence = 0.70
+ood = 0.88

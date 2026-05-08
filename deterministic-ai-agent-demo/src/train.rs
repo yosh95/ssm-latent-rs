@@ -1,10 +1,10 @@
 use crate::model::{IntentClassifier, NERClassifier};
 
 use burn::nn::loss::CrossEntropyLossConfig;
-use burn::optim::{AdamConfig, GradientsParams};
 use burn::optim::Optimizer;
-use burn::tensor::backend::AutodiffBackend;
+use burn::optim::{AdamConfig, GradientsParams};
 use burn::tensor::Tensor;
+use burn::tensor::backend::AutodiffBackend;
 
 pub struct Trainer;
 
@@ -24,7 +24,7 @@ impl Trainer {
         &self,
         classifier: NERClassifier<B>,
         token_embeddings: Tensor<B, 3>, // [N, Seq_Len, Hidden_Dim]
-        labels: Tensor<B, 2>,          // [N, Seq_Len]
+        labels: Tensor<B, 2>,           // [N, Seq_Len]
         epochs: usize,
         learning_rate: f64,
     ) -> NERClassifier<B> {

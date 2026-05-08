@@ -74,8 +74,8 @@ impl<B: Backend> AgentEngine<B> {
         if let Some(path) = config_path {
             let content = std::fs::read_to_string(path)
                 .map_err(|e| AgentError::ConfigError(format!("Failed to read config: {}", e)))?;
-            let config: EngineConfig = serde_yaml::from_str(&content)
-                .map_err(|e| AgentError::ConfigError(format!("Failed to parse YAML: {}", e)))?;
+            let config: EngineConfig = toml::from_str(&content)
+                .map_err(|e| AgentError::ConfigError(format!("Failed to parse TOML: {}", e)))?;
 
             confidence_threshold = config.engine.thresholds.confidence;
             ood_threshold = config.engine.thresholds.ood;

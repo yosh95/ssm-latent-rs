@@ -15,23 +15,24 @@ default-run = "circle-world-demo"
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+anyhow = { version = "1.0.102", default-features = false, features = ["std"] }
+burn = { version = "0.21", default-features = false, features = ["std", "ndarray", "autodiff", "wgpu"] }
+ndarray = { version = "0.17.2", default-features = false, features = ["std"] }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["ndarray", "std", "download-binaries", "tls-rustls" ], optional = true }
+rand = { version = "0.10", default-features = false }
+serde = { version = "1.0", default-features = false, optional = true }
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
+
+[features]
+default = ["std", "ndarray", "autodiff"]
+std = ["burn/std", "anyhow/std", "ndarray/std"]
+ndarray = ["std", "burn/ndarray"]
+autodiff = ["burn/autodiff"]
+wgpu = ["burn/wgpu"]
+train = ["burn/train"]
+
 [[bin]]
 name = "circle-world-demo"
 path = "circle-world-demo/src/main.rs"
-
-[dependencies]
-burn = { version = "0.20", features = ["std", "autodiff", "wgpu", "train"] }
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "tls-rustls", "ndarray", "download-binaries"] }
-ndarray = "0.17"
-tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
-hf-hub = { version = "0.5", default-features = false, features = ["rustls-tls", "ureq"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-rand = "0.10"
-anyhow = "1.0"
-
-[features]
-default = ["wgpu", "ndarray"]
-wgpu = ["burn/wgpu"]
-ndarray = ["burn/ndarray"]
 

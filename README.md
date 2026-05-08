@@ -47,19 +47,24 @@ The metronome learning demo runs entirely in the browser using WebAssembly and [
 
 ![WASM Metronome Demo](images/wasm_demo.gif)
 
-1. Install Trunk:
+1. Add wasm32 target:
+   ```bash
+   rustup target add wasm32-unknown-unknown
+   ```
+
+2. Install trunk:
    ```bash
    cargo install trunk
    ```
-2. Navigate to the demo directory:
+3. Navigate to the demo directory:
    ```bash
    cd wasm-demo
    ```
-3. Run the development server:
+4. Run the development server:
    ```bash
-   trunk serve
+   trunk serve --release
    ```
-4. Open your browser to `http://localhost:8080`.
+5. Open your browser to `http://localhost:8080`.
 
 The WASM demo consists of:
 - **Blue Line**: Reality (The physics-driven ground truth).
