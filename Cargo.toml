@@ -4,6 +4,7 @@ members = [
     "log-anomaly-demo",
     "wasm-demo",
     "deterministic-ai-agent-demo",
+    "game-playing-demo",
 ]
 
 [package]
