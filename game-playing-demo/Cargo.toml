@@ -1,0 +1,15 @@
+[package]
+name = "game-playing-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ssm-latent-model = { path = "..", default-features = false, features = ["wgpu", "ndarray", "train"] }
+burn = { version = "0.21", default-features = false, features = ["std", "autodiff", "wgpu", "train"] }
+rand = { version = "0.10", default-features = false }
+anyhow = { version = "1.0", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+[[bin]]
+name = "game-playing-demo"
+path = "src/main.rs"
