@@ -3,10 +3,29 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::Tensor;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
+use serde::Deserialize;
 use ssm_latent_model::latent::{LatentLossArgs, LatentPredictor, LatentState};
 use ssm_latent_model::ssm::SsmConfig;
+use std::fs;
 use std::thread::sleep;
 use std::time::Duration;
+
+#[derive(Deserialize, Debug)]
+struct FullConfig {
+    model: SsmConfig,
+    train: TrainConfig,
+}
+
+#[derive(Deserialize, Debug)]
+struct TrainConfig {
+    learning_rate: f64,
+    epochs: usize,
+    batch_size: usize,
+    seq_len: usize,
+    stability_weight: f64,
+    curvature_weight: f64,
+    recon_weight: f64,
+}
 
 // --- Backend Selection based on features ---
 #[cfg(feature = "wgpu")]
@@ -79,6 +98,13 @@ fn draw_frame(
 }
 
 fn main() {
+    // --- Load Configuration ---
+    let config_content = fs::read_to_string("config.toml").expect("Failed to read config.toml");
+    let full_config: FullConfig =
+        toml::from_str(&config_content).expect("Failed to parse config.toml");
+    let config = full_config.model;
+    let train_config = full_config.train;
+
     // --- Device Selection ---
     #[cfg(feature = "wgpu")]
     let device = burn::backend::wgpu::WgpuDevice::default();
@@ -90,6 +116,7 @@ fn main() {
 
     println!("==========================================================");
     println!("     📖 The Chronicles of the Digital Explorer");
+    println!("     (Loaded config from config.toml)");
     println!("==========================================================");
     sleep(Duration::from_millis(800));
 
@@ -112,21 +139,12 @@ fn main() {
         sleep(Duration::from_millis(100));
     }
 
-    let config = SsmConfig {
-        d_model: 64,
-        d_state: 32,
-        expand: 2,
-        n_heads: 4,
-        mimo_rank: 2,
-        use_conv: true,
-        conv_kernel: 4,
-    };
     let input_dim = 2;
     let action_dim = 2;
-    let seq_len = 32;
-    let batch_size = 4; // Increased for more stable gradient
-    let epochs = 120;
-    let learning_rate = 1e-3; // Balanced learning rate
+    let seq_len = train_config.seq_len;
+    let batch_size = train_config.batch_size;
+    let epochs = train_config.epochs;
+    let learning_rate = train_config.learning_rate;
 
     let mut explorer =
         LatentPredictor::<MyAutodiffBackend>::new(&config, input_dim, action_dim, &device);
@@ -182,9 +200,9 @@ fn main() {
             reconstructed_x,
             predicted_x,
             original_x: obs_data,
-            stability_weight: 1.2,
-            curvature_weight: 0.5,
-            recon_weight: 1.0,
+            stability_weight: train_config.stability_weight,
+            curvature_weight: train_config.curvature_weight,
+            recon_weight: train_config.recon_weight,
         });
 
         let current_loss: f32 = loss.clone().into_data().as_slice::<f32>().unwrap()[0];

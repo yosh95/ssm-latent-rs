@@ -227,7 +227,7 @@ impl HybridAdaptiveThreshold {
     fn from_calibration(scores: &[f32], k_mad: f32, alpha: f64, k_ewma: f64) -> Self {
         let mad_threshold = compute_mad_threshold(scores, k_mad);
         let mean = scores.iter().sum::<f32>() / scores.len() as f32;
-        // Use MAD-based threshold as baseline. 
+        // Use MAD-based threshold as baseline.
         // Removed the hardcoded mean*4.0 floor which was often too high.
         let baseline = mad_threshold;
         let var = scores.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / scores.len() as f32;

@@ -22,7 +22,8 @@ burn = { version = "0.21", default-features = false, features = ["std", "ndarray
 ndarray = { version = "0.17.2", default-features = false, features = ["std"] }
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["ndarray", "std", "download-binaries", "tls-rustls" ], optional = true }
 rand = { version = "0.10", default-features = false }
-serde = { version = "1.0", default-features = false, optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
 
 [features]
