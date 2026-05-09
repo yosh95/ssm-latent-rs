@@ -311,6 +311,7 @@ impl<B: Backend> SsmBlock<B> {
     }
 
     /// Sequential forward step for autoregressive inference
+    #[allow(dead_code)]
     pub fn forward_step(
         &self,
         x: Tensor<B, 2>,

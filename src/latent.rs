@@ -131,6 +131,7 @@ impl<B: Backend> LatentPredictor<B> {
         )
     }
 
+    #[allow(dead_code)]
     pub fn save(&self, file_path: &str) -> Result<(), std::io::Error> {
         let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
         let path = std::path::Path::new(file_path);
@@ -141,6 +142,7 @@ impl<B: Backend> LatentPredictor<B> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn load(self, file_path: &str, device: &B::Device) -> Result<Self, std::io::Error> {
         let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
         let path = std::path::Path::new(file_path);
