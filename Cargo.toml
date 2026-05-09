@@ -1,10 +1,10 @@
 [workspace]
 members = [
     "circle-world-demo",
-    "log-anomaly-demo",
-    "wasm-demo",
     "deterministic-ai-agent-demo",
-    "game-playing-demo",
+    "game-playing-wasm",
+    "log-anomaly-demo",
+    "metronome-demo",
 ]
 
 [package]
