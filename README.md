@@ -2,6 +2,8 @@
 
 A Rust-based exploration of **Latent World Models**, drawing inspiration from recent advances in State Space Models (SSM) and Joint-Embedding Predictive Architecture (JEPA).
 
+![World Model Demo](images/world_model.gif)
+
 This project explores the integration of **Mamba-style** sequence modeling with the **JEPA** framework, aiming to build a lightweight yet robust system for future state prediction in latent space.
 
 ---
@@ -24,6 +26,8 @@ This project explores the integration of **Mamba-style** sequence modeling with 
 
 ### 1. WebAssembly Demos (In-Browser)
 These experiments run locally in your browser, performing both training and inference.
+
+![WASM Metronome Demo](images/wasm_demo.gif)
 
 - **Ball Catch Game**: A simple physics environment where the agent learns to intercept a ball.
 - **Metronome**: A task focused on synchronizing internal state with external periodic signals.
