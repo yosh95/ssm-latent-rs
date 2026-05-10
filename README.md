@@ -1,123 +1,78 @@
 # ssm-latent-model
 
-Rust implementation of a latent state predictor leveraging State Space Models (SSM).
+A Rust-based exploration of **Latent World Models**, drawing inspiration from recent advances in State Space Models (SSM) and Joint-Embedding Predictive Architecture (JEPA).
 
-![World Model Demo](images/world_model.gif)
+This project explores the integration of **Mamba-style** sequence modeling with the **JEPA** framework, aiming to build a lightweight yet robust system for future state prediction in latent space.
 
-## Features
+---
 
-- **SSM Dynamics**: Efficient sequence modeling using state space principles.
-- **Latent Prediction**: Predicts future states in an embedding space.
-- **Stability Regularizer**: Prevents representation collapse during training without contrastive samples.
-- **Rust + Burn**: High-performance implementation supporting multiple backends (WGPU, NdArray, LibTorch, etc.).
+### 🎮 Ball Catch Game (WASM Demo)
+*Learning physics through observation.* This demo showcases the model's ability to approximate object trajectories and react in real-time within a browser environment.
 
-## Installation
+![Ball Catch Demo](images/ball_catch.gif)
 
-```bash
-git clone <repository-url>
-cd ssm-latent-model
-cargo build
-```
+---
 
-## Usage
+## 🚀 Key Characteristics
 
-### Native Demo
-Run the command-line demonstration script:
-```bash
-cargo run --release
-```
+- **SSM-based Dynamics**: Utilizes State Space principles (inspired by the Mamba architecture) for efficient sequence handling, supporting both parallel training and fast, recurrent-style inference.
+- **Latent-Space Prediction**: Following the JEPA philosophy, the model predicts future states in a learned embedding space. This approach focuses on capturing essential dynamics rather than predicting every pixel, which helps in maintaining stability.
+- **Trajectory Regularization**: Incorporates concepts like *Temporal Straightening* to encourage more predictable and smoother transitions in the latent space, aiding long-term planning.
+- **Cross-Platform Implementation**: Built with [Burn](https://burn.dev/), enabling the same model logic to run across different backends, including WGPU for browser-based WASM execution.
 
-The native demo consists of three parts:
-1.  **Observation**: Visualize the raw signal (a noisy circular motion).
-2.  **Dreaming (Training)**: The model learns the underlying laws of the world. Every 20 epochs, it runs a "mental simulation" side-by-side with the ground truth to show how its understanding improves.
-3.  **Pure Imagination**: The model predicts future states without any external observations, relying solely on its internal "World Model".
+## 🕹 Demos & Usage
 
-### Log Anomaly Detection Demo (SenseTransformer + SSM)
-This demo showcases how to detect semantic anomalies in system logs using a pre-trained SentenceTransformer and the Latent SSM model.
+### 1. WebAssembly Demos (In-Browser)
+These experiments run locally in your browser, performing both training and inference.
 
-![Log Anomaly Demo](images/log_demo.gif)
+- **Ball Catch Game**: A simple physics environment where the agent learns to intercept a ball.
+- **Metronome**: A task focused on synchronizing internal state with external periodic signals.
+
+**How to Run:**
+1. Install [Trunk](https://trunkrs.dev/): `cargo install trunk`
+2. Navigate to the desired demo (e.g., `cd game-playing-wasm`).
+3. Start the local server: `trunk serve --release`
+
+### 2. Log Anomaly Detection
+This demo showcases semantic anomaly detection in system logs. It combines **SentenceTransformer** embeddings with the **Latent SSM** to identify deviations from learned temporal patterns.
+- **Hybrid Adaptive Thresholding**: Implements a robust anomaly detection engine using Median Absolute Deviation (MAD) for calibration and Exponential Weighted Moving Average (EWMA) online tracking.
+- **Contamination Prevention**: Only normal observations update the threshold, ensuring the model remains resilient to persistent anomalies.
 
 ```bash
 cargo run -p log-anomaly-demo --release
 ```
+![Log Anomaly Demo](images/log_demo.gif)
 
-### WASM Metronome Demo
-
-The metronome learning demo runs entirely in the browser using WebAssembly and [Trunk](https://trunkrs.dev/). **Training and prediction are performed locally in your browser.**
-
-![WASM Metronome Demo](images/wasm_demo.gif)
-
-1. Add wasm32 target:
-   ```bash
-   rustup target add wasm32-unknown-unknown
-   ```
-
-2. Install trunk:
-   ```bash
-   cargo install trunk
-   ```
-3. Navigate to the demo directory:
-   ```bash
-   cd wasm-demo
-   ```
-4. Run the development server:
-   ```bash
-   trunk serve --release
-   ```
-5. Open your browser to `http://localhost:8080`.
-
-The WASM demo consists of:
-- **Blue Line**: Reality (The physics-driven ground truth).
-- **Orange Line**: Imagination (The model's prediction).
-- **In-Browser Training**: The model learns the metronome's dynamics in real-time within the browser. After about 100 epochs, the "Imagination" will sync smoothly with "Reality".
-
-## Testing
-
-Run equivalence tests (Parallel vs Sequential):
+### 3. Native Latent Visualization
+A CLI-based visualization of the model's "imagination" process.
 ```bash
-cargo test
+cargo run --release
 ```
 
-## Configuration
+---
 
-The project uses a `config.toml` file to control model architecture and training hyperparameters:
+## 🔬 Other Experiments
 
-```toml
-[model]
-d_model = 64       # Latent dimension
-d_state = 16       # State dimension for SSM
-expand = 2         # Expansion factor for inner dimension
-n_heads = 4        # Number of heads (MIMO)
-mimo_rank = 1      # MIMO rank (d_head must be divisible by this)
-use_conv = true    # Enable conv1d before SSM
-conv_kernel = 4    # Kernel size for conv1d
+### Deterministic AI Agent
+A high-performance agent designed for industrial (OT) environments, focusing on reliability and determinacy.
+- **Features**: Neural intent classification, Out-of-Distribution (OOD) detection via class centroids, and hybrid (Neural + Exact Match) Named Entity Recognition (NER).
+- **Safety**: Designed to reject inputs falling outside the training distribution, ensuring predictable behavior in sensitive environments.
+- **More Info**: See the [Agent README](deterministic-ai-agent-demo/README.md).
 
-[train]
-learning_rate = 1e-3
-epochs = 120
-batch_size = 4
-seq_len = 32
-stability_weight = 1.0   # Weight for stability regularizer
-curvature_weight = 0.5   # Weight for temporal straightening
-recon_weight = 1.0       # Weight for reconstruction loss
-
-[anomaly]
-k_mad = 3.0              # MAD sensitivity for anomaly threshold
-alpha_ewma = 0.1         # EWMA smoothing factor
-k_ewma = 3.0             # EWMA sensitivity for anomaly threshold
+```bash
+cargo run -p deterministic-ai-agent-demo --release
 ```
 
-### Parameter Descriptions
+## 🧪 Technical Notes
 
-- **`[model]`**: Architecture of the SSM block. `d_model` is the core latent dimension; `d_state` controls the state size of the SSM dynamics.
-- **`[train]`**: Training hyperparameters. The `stability_weight` and `curvature_weight` control the strength of the representation collapse prevention and temporal straightening regularizers, respectively.
-- **`[anomaly]`**: (Log anomaly demo only) Parameters for the hybrid adaptive anomaly threshold using MAD calibration and EWMA online tracking.
+- **Stability**: Uses random projections as a lightweight regularizer to prevent latent representation collapse in non-contrastive learning scenarios.
+- **Complexity**: The implementation balances $O(L \log L)$ training complexity with $O(1)$ state updates during deployment.
 
-## References
+## 📚 References
 
-- Lahoti, A., Li, K. Y., Chen, B., Wang, C., Bick, A., Kolter, J. Z., Dao, T., & Gu, A. (2026). Mamba-3: Improved Sequence Modeling using State Space Principles. *arXiv preprint arXiv:2603.15569*. [https://arxiv.org/abs/2603.15569](https://arxiv.org/abs/2603.15569)
-- Maes, L., Le Lidec, Q., Scieur, D., LeCun, Y., & Balestriero, R. (2026). LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels. *arXiv preprint arXiv:2603.19312*. [https://arxiv.org/abs/2603.19312](https://arxiv.org/abs/2603.19312)
+- Lahoti, A., et al. (2026). **Mamba-3: Improved Sequence Modeling using State Space Principles**.
+- Maes, L., et al. (2026). **LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels**.
+- Wang, Y., Bounou, O., Zhou, G., Balestriero, R., Rudner, T.G., LeCun, Y., & Ren, M. (2026). **Temporal Straightening for Latent Planning**.
 
-## License
-
+## 📄 License
 MIT License
