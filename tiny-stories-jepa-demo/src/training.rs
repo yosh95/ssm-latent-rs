@@ -26,7 +26,7 @@ impl<B: Backend> StoryBatcher<B> {
 impl<B: Backend> Batcher<B, Vec<usize>, StoryBatch<B>> for StoryBatcher<B> {
     fn batch(&self, items: Vec<Vec<usize>>, _device: &B::Device) -> StoryBatch<B> {
         let batch_size = items.len();
-        // すべてのシーケンスを同じ長さに切り揃える（最小の長さに合わせる）
+        // Align all sequences to the same length (match the minimum length)
         let min_len = items.iter().map(|it| it.len()).min().unwrap_or(0);
         
         if min_len < 2 {
@@ -116,7 +116,7 @@ pub fn train<B: AutodiffBackend>(
 
             let grads = loss.backward();
             let grads = burn::optim::GradientsParams::from_grads(grads, &model);
-            model = optim.step(5e-5, model, grads); // 小さめの学習率を直接指定
+            model = optim.step(config.learning_rate, model, grads);
         }
         
         if count > 0 {
