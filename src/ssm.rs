@@ -134,7 +134,14 @@ impl<B: Backend> SsmBlock<B> {
             None
         };
 
-        let dt_proj = LinearConfig::new(d_inner, n_heads).init(device);
+        let dt_proj = LinearConfig::new(d_inner, n_heads).with_bias(true).init(device);
+        // Initialize dt_proj bias to a small negative value so that initial delta is small
+        let dt_bias = Tensor::full([n_heads], -3.1, device);
+        let dt_proj = Linear {
+            weight: dt_proj.weight,
+            bias: Some(Param::from_tensor(dt_bias)),
+        };
+
         let lambda_proj = LinearConfig::new(d_inner, n_heads).init(device);
         let theta_proj = LinearConfig::new(d_inner, n_heads * (d_state / 2)).init(device);
 
