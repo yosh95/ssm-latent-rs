@@ -2,7 +2,7 @@
 
 A Rust-based exploration of **Latent World Models**, drawing inspiration from recent advances in State Space Models (SSM) and Joint-Embedding Predictive Architecture (JEPA).
 
-![World Model Demo](images/world_model.gif)
+![Cicle Demo](images/circle_demo.gif)
 
 This project explores the integration of **Mamba-style** sequence modeling with the **JEPA** framework, aiming to build a lightweight yet robust system for future state prediction in latent space.
 

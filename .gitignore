@@ -278,3 +278,5 @@ TSWLatexianTemp*
 
 .cargo
 dist
+./data/*
+data
