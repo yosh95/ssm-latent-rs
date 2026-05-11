@@ -17,6 +17,9 @@ use ort::value::Tensor as OrtTensor;
 #[cfg(feature = "ort")]
 use tokenizers::Tokenizer;
 
+#[cfg(feature = "ort")]
+use std::sync::{Arc, Mutex};
+
 /// Text embedder using ONNX Runtime and HuggingFace tokenizers.
 ///
 /// Loads a SentenceTransformer-compatible ONNX model and generates
@@ -26,8 +29,9 @@ use tokenizers::Tokenizer;
 /// # Feature Flag
 /// Only available when the `ort` feature is enabled.
 #[cfg(feature = "ort")]
+#[derive(Clone)]
 pub struct LogEmbedder {
-    session: Session,
+    session: Arc<Mutex<Session>>,
     tokenizer: Tokenizer,
 }
 
@@ -42,25 +46,32 @@ impl LogEmbedder {
             .commit_from_file(model_path)
             .with_context(|| "Failed to create ORT session")?;
 
-        Ok(Self { session, tokenizer })
+        Ok(Self { session: Arc::new(Mutex::new(session)), tokenizer })
     }
 
-    pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
+    pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let encoding = self
             .tokenizer
             .encode(text, true)
             .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
 
         let ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
+        let mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&x| x as i64).collect();
+        let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&x| x as i64).collect();
         let seq = ids.len();
 
         let input_ids = Array2::from_shape_vec((1, seq), ids)?;
+        let attention_mask = Array2::from_shape_vec((1, seq), mask)?;
+        let token_type_ids = Array2::from_shape_vec((1, seq), type_ids)?;
 
         let inputs = ort::inputs![
             "input_ids" => OrtTensor::from_array(input_ids)?,
+            "attention_mask" => OrtTensor::from_array(attention_mask)?,
+            "token_type_ids" => OrtTensor::from_array(token_type_ids)?,
         ];
 
-        let outputs = self.session.run(inputs)?;
+        let mut session = self.session.lock().map_err(|_| anyhow::anyhow!("Failed to lock session"))?;
+        let outputs = session.run(inputs)?;
         let embeddings = outputs[0].try_extract_array::<f32>()?;
 
         let mean = embeddings.mean_axis(Axis(1)).context("Pooling failed")?;

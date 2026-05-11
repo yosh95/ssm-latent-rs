@@ -1,0 +1,14 @@
+[model]
+d_model = 256
+d_state = 16
+expand = 2
+n_heads = 4
+mimo_rank = 1
+use_conv = true
+conv_kernel = 4
+
+[training]
+num_epochs = 30
+batch_size = 4
+learning_rate = 0.0001
+dataset_samples = 300

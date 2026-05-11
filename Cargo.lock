@@ -5451,6 +5451,7 @@ dependencies = [
  "ssm-latent-model",
  "tokenizers 0.23.1",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
