@@ -1,3 +1,9 @@
+//! Preprocessing utilities for embedding text data.
+//!
+//! This module provides the [`LogEmbedder`] struct (behind the `ort` feature flag)
+//! for generating sentence-level embeddings using ONNX Runtime, and shared
+//! utility functions for projection normalization.
+
 #[cfg(feature = "ort")]
 use anyhow::{Context, Result};
 use burn::tensor::{Tensor, backend::Backend};
@@ -11,6 +17,14 @@ use ort::value::Tensor as OrtTensor;
 #[cfg(feature = "ort")]
 use tokenizers::Tokenizer;
 
+/// Text embedder using ONNX Runtime and HuggingFace tokenizers.
+///
+/// Loads a SentenceTransformer-compatible ONNX model and generates
+/// sentence-level embeddings via mean pooling over token representations.
+/// This is primarily used by the `log-anomaly-demo` for semantic log analysis.
+///
+/// # Feature Flag
+/// Only available when the `ort` feature is enabled.
 #[cfg(feature = "ort")]
 pub struct LogEmbedder {
     session: Session,
@@ -54,8 +68,17 @@ impl LogEmbedder {
     }
 }
 
-/// Normalizes stability projections matrix.
-/// Used to keep common logic in one place.
+/// Normalize stability projections matrix column-wise to unit length.
+///
+/// Each column of the projection matrix is divided by its L2 norm,
+/// ensuring that the random projections are properly scaled for
+/// the [`stability_loss`](crate::latent::stability_loss) computation.
+///
+/// # Arguments
+/// * `projections` - Matrix of shape `[d_model, n_projections]`
+///
+/// # Returns
+/// Column-normalized matrix of the same shape.
 pub fn normalize_projections<B: Backend>(projections: Tensor<B, 2>) -> Tensor<B, 2> {
     let norm = projections.clone().powf_scalar(2.0).sum_dim(0).sqrt() + 1e-6;
     projections / norm

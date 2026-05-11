@@ -33,6 +33,7 @@ ndarray = ["std", "burn/ndarray"]
 autodiff = ["burn/autodiff"]
 wgpu = ["burn/wgpu"]
 train = ["burn/train"]
+ort = ["dep:ort"]
 
 [[bin]]
 name = "circle-world-demo"

@@ -6,6 +6,26 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Tensor};
 use core::f32::consts::PI;
 
+/// Configuration for the SSM (State Space Model) block.
+///
+/// This implements a Mamba-style selective state space model with complex rotation
+/// dynamics. The architecture follows the design principles of:
+/// - **Mamba** (Gu & Dao, 2023): Selective scan with input-dependent parameters
+/// - **Mamba-3** (Lahoti et al., 2026): Complex rotation in state space with MIMO rank
+///
+/// # Key parameters
+/// - `d_model`: Model dimension (input/output)
+/// - `d_state`: State space dimension (must be even for complex rotation)
+/// - `expand`: Inner dimension multiplier; `d_inner = d_model * expand`
+/// - `n_heads`: Number of attention heads; `d_inner` must be divisible by `n_heads`
+/// - `mimo_rank`: Multi-input multi-output rank; each head outputs `mimo_rank` values
+/// - `use_conv`: Whether to apply causal 1D convolution for local context
+/// - `conv_kernel`: Kernel size for the causal convolution
+///
+/// # Constraints
+/// - `d_inner = d_model * expand` must be divisible by `n_heads`
+/// - `d_head = d_inner / n_heads` must be divisible by `mimo_rank`
+/// - `d_state` must be even (for complex rotation decomposition)
 #[derive(Config, Debug)]
 pub struct SsmConfig {
     pub d_model: usize,
@@ -19,25 +39,62 @@ pub struct SsmConfig {
     pub conv_kernel: usize,
 }
 
+/// A selective state space model block with complex rotation dynamics.
+///
+/// This block implements the core SSM computation following Mamba-style architecture:
+/// 1. Input projection splits into two branches: the main branch (u) and an evolution gate (evo_gate)
+/// 2. Causal 1D convolution captures local context (optional)
+/// 3. SiLU activation produces the input to the selective scan
+/// 4. Input-dependent parameters (delta, lambda, theta, B, C) are computed via projections
+/// 5. Selective scan applies complex rotation state-space dynamics
+/// 6. Residual connection with learnable skip (D parameter)
+/// 7. RMSNorm and gated output projection (SwiGLU-style gating)
+///
+/// # Parallel vs Sequential modes
+/// - [`forward()`](Self::forward): Parallel scan for O(L log L) training
+/// - [`forward_step()`](Self::forward_step): Sequential step for O(1) autoregressive inference
+///
+/// These two modes are mathematically equivalent, verified by the equivalence test.
 #[derive(Module, Debug)]
 pub struct SsmBlock<B: Backend> {
+    /// Input projection: maps `d_model` → `2 * d_inner` (split into u and evo_gate)
     pub in_proj: Linear<B>,
+    /// Causal 1D convolution for local context aggregation (optional)
     pub conv1d: Option<Conv1d<B>>,
+    /// Output projection: maps `d_inner` → `d_model`
     pub out_proj: Linear<B>,
+    /// Projects SiLU-activated input to step size (delta) per head: `d_inner` → `n_heads`
     pub dt_proj: Linear<B>,
+    /// Projects SiLU-activated input to decay gate (lambda) per head: `d_inner` → `n_heads`
     pub lambda_proj: Linear<B>,
+    /// Projects SiLU-activated input to rotation angles (theta) per head: `d_inner` → `n_heads * (d_state/2)`
     pub theta_proj: Linear<B>,
+    /// Projects SiLU-activated input to B matrix input: `d_inner` → `n_heads * mimo_rank * d_state`
     pub b_proj: Linear<B>,
+    /// Projects SiLU-activated input to C matrix output: `d_inner` → `n_heads * mimo_rank * d_state`
     pub c_proj: Linear<B>,
+    /// Bias term for B input projection: shape `[n_heads, mimo_rank, d_state]`
     pub b_bias: Param<Tensor<B, 3>>,
+    /// Bias term for C output projection: shape `[n_heads, mimo_rank, d_state]`
     pub c_bias: Param<Tensor<B, 3>>,
+    /// Real part of diagonal state transition matrix A: shape `[n_heads, d_state]`
+    /// Initialized uniformly in [-1.0, -0.1] to ensure damping (exponential decay)
     pub a_re: Param<Tensor<B, 2>>,
+    /// Imaginary part of diagonal state transition matrix A: shape `[n_heads, d_state]`
+    /// Initialized uniformly in [0, 2π] to enable complex rotation dynamics
     pub a_im: Param<Tensor<B, 2>>,
+    /// Skip connection parameter D: shape `[d_inner]`
+    /// Enables direct input-to-output pathway (D-skip in SSM formulation)
     pub d: Param<Tensor<B, 1>>,
+    /// RMS normalization applied after SSM output + residual
     pub norm: RmsNorm<B>,
+    /// Inner dimension: `d_model * expand`
     pub d_inner: usize,
+    /// State space dimension
     pub d_state: usize,
+    /// Number of attention heads
     pub n_heads: usize,
+    /// Multi-input multi-output rank
     pub mimo_rank: usize,
 }
 
@@ -87,6 +144,15 @@ impl<B: Backend> SsmBlock<B> {
         let b_bias = Tensor::zeros([n_heads, mimo_rank, d_state], device);
         let c_bias = Tensor::zeros([n_heads, mimo_rank, d_state], device);
 
+        // State transition matrix initialization:
+        // - a_re (real part): initialized in [-1.0, -0.1] to ensure damping.
+        //   Values near -1.0 produce rapid decay (stable but potentially too fast),
+        //   while values near -0.1 allow slower exponential decay.
+        //   During training, softplus(dt) * sigmoid(lambda) scaling means the
+        //   effective decay rate is modulated by the input-dependent step size and gate.
+        // - a_im (imaginary part): initialized in [0, 2π] to enable oscillatory dynamics.
+        //   This allows the model to capture periodic and quasi-periodic patterns
+        //   in the state space, which is essential for modeling cyclical phenomena.
         let a_re = Tensor::random(
             [n_heads, d_state],
             Distribution::Uniform(-1.0, -0.1),
@@ -123,6 +189,16 @@ impl<B: Backend> SsmBlock<B> {
         }
     }
 
+    /// Forward pass using parallel scan for O(L log L) training complexity.
+    ///
+    /// Processes the entire sequence at once using a parallel prefix scan algorithm,
+    /// enabling efficient gradient computation during backpropagation.
+    ///
+    /// # Arguments
+    /// * `x` - Input tensor of shape `[batch, seq_len, d_model]`
+    ///
+    /// # Returns
+    /// Output tensor of shape `[batch, seq_len, d_model]`
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let [batch, _, _] = x.dims();
         let projected = self.in_proj.forward(x);
@@ -159,7 +235,32 @@ impl<B: Backend> SsmBlock<B> {
         self.out_proj.forward(y)
     }
 
-    /// Selective scan using complex state-space dynamics and parallel scan
+    /// Selective scan using complex state-space dynamics and parallel scan.
+    ///
+    /// Implements the core SSM recurrence with input-dependent parameters:
+    ///
+    /// ```text
+    /// h_t = (λ_t · Δ_t) · B_t · u_t + (1 - λ_t) · Δ_t · h_{t-1} · A_t + β_t
+    /// y_t = C_t · h_t
+    /// ```
+    ///
+    /// where:
+    /// - `A_t = exp(a_re · Δ_t) · R(θ_t)` is the complex rotation state transition
+    /// - `Δ_t` (delta) is the input-dependent step size
+    /// - `λ_t` (lambda) is the input-dependent exponential gate controlling
+    ///   the balance between new information and recurrent state
+    /// - `θ_t` (theta) is the input-dependent rotation angle
+    /// - `β_t` incorporates the previous timestep's input with decay
+    ///
+    /// The computation uses a parallel prefix scan for O(L log L) complexity.
+    ///
+    /// # Arguments
+    /// * `u` - SiLU-activated input: `[batch, seq_len, d_inner]`
+    /// * `delta` - Step size per head: `[batch, seq_len, n_heads]`
+    /// * `lambda` - Decay gate per head: `[batch, seq_len, n_heads]`
+    /// * `theta` - Rotation angles per head: `[batch, seq_len, n_heads * (d_state/2)]`
+    /// * `b` - Input-dependent B matrix: `[batch, seq_len, n_heads * mimo_rank * d_state]`
+    /// * `c` - Input-dependent C matrix: `[batch, seq_len, n_heads * mimo_rank * d_state]`
     pub fn selective_scan(
         &self,
         u: Tensor<B, 3>,
@@ -252,7 +353,25 @@ impl<B: Backend> SsmBlock<B> {
     }
 
     /// Parallel prefix scan for O(log T) complexity.
-    /// Optimized to reduce intermediate tensor allocations where possible.
+    ///
+    /// Implements the Blelloch-style parallel scan for associative operations
+    /// on the 2×2 complex rotation matrices. Each step composes pairs of
+    /// (state transition, contribution) tuples:
+    ///
+    /// ```text
+    /// A_new = A_right · A_left
+    /// w_new = A_right · w_left + w_right
+    /// ```
+    ///
+    /// The scan operates on the real and imaginary parts of the complex
+    /// rotation separately, with the transition matrix represented as:
+    ///
+    /// ```text
+    /// A = | a00  a01 |   = | Re·cos  -Re·sin |
+    ///     | a10  a11 |     | Re·sin   Re·cos |
+    /// ```
+    ///
+    /// where `Re = exp(a_re · Δ)` and the angle comes from `(a_im · Δ + θ)`.
     fn parallel_scan(
         &self,
         mut a00: Tensor<B, 5>,
@@ -310,8 +429,31 @@ impl<B: Backend> SsmBlock<B> {
         (w0, w1)
     }
 
-    /// Sequential forward step for autoregressive inference
-    #[allow(dead_code)]
+    /// Sequential forward step for autoregressive inference.
+    ///
+    /// Processes a single timestep with O(1) state updates, suitable for
+    /// real-time/streaming inference. Maintains an explicit hidden state
+    /// (`h`), previous input contribution (`prev_bx`), and optional
+    /// convolution state for causal conv1d.
+    ///
+    /// This method is mathematically equivalent to [`forward()`](Self::forward)
+    /// but processes one step at a time, making it ideal for:
+    /// - Autoregressive generation
+    /// - Real-time inference on streaming data
+    /// - Step-by-step world model prediction in reinforcement learning
+    ///
+    /// # Arguments
+    /// * `x` - Input tensor of shape `[batch, d_model]` (single timestep)
+    /// * `prev_h` - Previous hidden state of shape `[batch, n_heads, d_state, d_head_mimo]`
+    /// * `prev_bx` - Previous B·x contribution (optional, `None` for first step)
+    /// * `conv_state` - Previous convolution state (optional, `None` if no conv or first step)
+    ///
+    /// # Returns
+    /// A tuple of:
+    /// - Output tensor of shape `[batch, d_model]`
+    /// - Updated hidden state
+    /// - Current B·x contribution (to pass to next step as `prev_bx`)
+    /// - Updated conv state (if conv is enabled)
     pub fn forward_step(
         &self,
         x: Tensor<B, 2>,
@@ -406,7 +548,18 @@ impl<B: Backend> SsmBlock<B> {
         )
     }
 
-    /// Complex rotation in state space
+    /// Apply complex rotation to the hidden state.
+    ///
+    /// The state `h` is split into real and imaginary halves along the
+    /// state dimension. The rotation is applied as:
+    ///
+    /// ```text
+    /// h_re' = h_re · cos(angle) - h_im · sin(angle)
+    /// h_im' = h_re · sin(angle) + h_im · cos(angle)
+    /// ```
+    ///
+    /// This enables oscillatory dynamics in the state space, which is
+    /// crucial for modeling periodic and quasi-periodic phenomena.
     fn rotate_state(&self, h: Tensor<B, 4>, angle: Tensor<B, 3>) -> Tensor<B, 4> {
         let [batch, n_heads, d_state, d_head_mimo] = h.dims();
         let cos = angle.clone().cos().unsqueeze_dim::<4>(3);

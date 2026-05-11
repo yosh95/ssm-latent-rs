@@ -27,6 +27,17 @@ const YELLOW: &str = "\x1b[33m";
 // const BLUE: &str = "\x1b[34m";
 const BOLD: &str = "\x1b[1m";
 
+/// Text embedder using ONNX Runtime with CUDA fallback and HuggingFace Hub model downloading.
+///
+/// This is an extended version of the library's [`ssm_latent_model::preprocess::LogEmbedder`],
+/// adding the following capabilities needed for the demo:
+/// - Automatic model downloading via HuggingFace Hub (`hf_hub`)
+/// - CUDA execution provider with automatic CPU fallback
+/// - ONNX external data file pre-fetching for large models
+///
+/// The library version (behind the `ort` feature flag) provides a simpler interface
+/// suitable for integration into other projects. This version is tailored for
+/// the interactive demo's needs (auto-download, CUDA acceleration).
 pub struct LogEmbedder {
     session: Session,
     tokenizer: Tokenizer,

@@ -72,6 +72,38 @@ cargo run -p deterministic-ai-agent-demo --release
 - **Stability**: Uses random projections as a lightweight regularizer to prevent latent representation collapse in non-contrastive learning scenarios.
 - **Complexity**: The implementation balances $O(L \log L)$ training complexity with $O(1)$ state updates during deployment.
 
+### Running Tests
+
+The project includes comprehensive tests covering core functionality, equivalence verification, and edge cases:
+
+```bash
+# Run all tests (including extended tests)
+cargo test --all-targets --all-features
+
+# Run specific test suites
+cargo test --test core_tests          # Stability loss, curvature loss, save/load
+cargo test --test equivalence_test    # Parallel scan ≡ sequential step equivalence
+cargo test --test consistency_test     # Gradient computability
+cargo test --test multimodal_tests   # Multimodal forward shape verification
+cargo test --test extended_tests      # Edge cases, MIMO rank > 1, step(), vision, conv equivalence
+```
+
+#### Test Coverage
+
+| Category | Tests | Description |
+|---|---|---|
+| **Equivalence** | Parallel vs. Sequential | Verifies `forward()` ≡ `forward_step()` loop |
+| **Equivalence** | MIMO Rank 2 | Same equivalence test with `mimo_rank=2` |
+| **Equivalence** | Conv1d enabled | Parallel/sequential equivalence with causal convolution |
+| **Edge Cases** | `curvature_loss(seq_len < 3)` | Returns 0.0 for insufficient sequence length |
+| **Edge Cases** | Constant velocity trajectory | Verifies curvature loss ≈ 0 for straight paths |
+| **Step** | `LatentPredictor::step()` | Shape verification with/without conv |
+| **Step** | Multi-step consistency | Finite outputs, evolving hidden state |
+| **Vision** | Encoder/Decoder shapes | Round-trip shape preservation |
+| **Vision** | Multimodal loss | Loss is finite and non-negative |
+| **Gradient** | Conv1d gradients | Verifies conv weights receive gradients |
+| **Gradient** | SSM parameters | Verifies `a_re`, `a_im`, `dt_proj`, `out_proj` gradients |
+
 ## 📚 References
 
 - Lahoti, A., et al. (2026). **Mamba-3: Improved Sequence Modeling using State Space Principles**.

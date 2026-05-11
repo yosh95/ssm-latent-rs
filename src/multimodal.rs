@@ -6,6 +6,15 @@ use burn::nn::{Linear, LinearConfig};
 use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
 
+/// Vision encoder: maps 2D images to latent space via convolutional layers.
+///
+/// Architecture: channels → 16 → 32 → d_model
+/// - Conv2d(channels, 16, 3×3, stride=2) + ReLU → 8×8
+/// - Conv2d(16, 32, 3×3, stride=2) + ReLU → 4×4
+/// - Linear(32*4*4, d_model)
+///
+/// Input shape: `[batch, channels, 16, 16]`
+/// Output shape: `[batch, d_model]`
 #[derive(Module, Debug)]
 pub struct VisionEncoder<B: Backend> {
     conv1: Conv2d<B>,
@@ -44,6 +53,16 @@ impl<B: Backend> VisionEncoder<B> {
     }
 }
 
+/// Vision decoder: reconstructs images from latent representations.
+///
+/// Architecture: d_model → 32*4*4 → 16 → 8 → channels
+/// - Linear(d_model, 32*4*4) → reshape to [batch, 32, 4, 4]
+/// - ConvTranspose2d(32, 16, 3×3, stride=2) + ReLU → 8×8
+/// - ConvTranspose2d(16, 8, 3×3, stride=2) + ReLU → 16×16
+/// - Conv2d(8, channels, 1×1) → final output
+///
+/// Input shape: `[batch, d_model]`
+/// Output shape: `[batch, channels, 16, 16]`
 #[derive(Module, Debug)]
 pub struct VisionDecoder<B: Backend> {
     linear: Linear<B>,
@@ -87,6 +106,9 @@ impl<B: Backend> VisionDecoder<B> {
     }
 }
 
+/// Loss input for the multimodal latent predictor.
+///
+/// Combines vision and sensor modalities with SSM dynamics prediction.
 pub struct MultimodalLossInput<B: Backend> {
     pub z: Tensor<B, 3>,
     pub pred_z: Tensor<B, 3>,
@@ -97,6 +119,17 @@ pub struct MultimodalLossInput<B: Backend> {
     pub stability_weight: f64,
 }
 
+/// Multimodal latent predictor: fuses vision, sensor, and action inputs
+/// with SSM dynamics for joint prediction in latent space.
+///
+/// This extends [`LatentPredictor`](crate::latent::LatentPredictor) to handle
+/// multiple input modalities:
+/// - **Vision**: Images processed through a convolutional encoder
+/// - **Sensors**: Scalar/vector sensor data through a linear encoder
+/// - **Actions**: Action signals through a linear encoder
+///
+/// All modalities are concatenated and fused before being passed to the SSM
+/// block for sequence prediction, following the JEPA philosophy.
 #[derive(Module, Debug)]
 pub struct MultimodalLatentPredictor<B: Backend> {
     vision_encoder: VisionEncoder<B>,
