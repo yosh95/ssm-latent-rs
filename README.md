@@ -41,6 +41,7 @@ These experiments run locally in your browser, performing both training and infe
 This demo showcases semantic anomaly detection in system logs. It combines **SentenceTransformer** embeddings with the **Latent SSM** to identify deviations from learned temporal patterns.
 - **Hybrid Adaptive Thresholding**: Implements a robust anomaly detection engine using Median Absolute Deviation (MAD) for calibration and Exponential Weighted Moving Average (EWMA) online tracking.
 - **Contamination Prevention**: Only normal observations update the threshold, ensuring the model remains resilient to persistent anomalies.
+- **Pre-warmed EWMA**: The EWMA is initialized with all calibration scores during construction, so the adaptive threshold is fully effective from the very first inference sample — no warmup delay.
 
 ```bash
 cargo run -p log-anomaly-demo --release

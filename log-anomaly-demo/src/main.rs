@@ -197,7 +197,9 @@ impl EwmaThreshold {
     }
 
     /// Return the current EWMA-based threshold without updating any statistics.
-    /// Returns `f32::NAN` during the warmup period.
+    /// Returns `f32::NAN` during the warmup period (count < warmup).
+    /// In practice, `from_calibration` pre-warms the EWMA with all calibration
+    /// scores (warmup=0), so this always returns a valid threshold.
     fn current_threshold(&self) -> f32 {
         if self.count < self.warmup {
             return f32::NAN;
@@ -215,6 +217,18 @@ impl EwmaThreshold {
         let delta = s - old_mean;
         self.var = self.alpha * delta * (s - self.mean) + (1.0 - self.alpha) * self.var;
     }
+
+    /// Pre-warm the EWMA with a batch of calibration scores so that
+    /// `current_threshold()` is immediately usable from the first online sample.
+    fn warmup(&mut self, scores: &[f32]) {
+        // Reset count so that current_threshold() returns a valid value
+        // after we've processed all the calibration data.
+        self.count = 0;
+        for &s in scores {
+            self.observe(s);
+        }
+        // Warmup is now complete; ensure count reflects reality.
+    }
 }
 
 /// Hybrid adaptive threshold combining MAD-based calibration with EWMA online tracking.
@@ -222,6 +236,9 @@ impl EwmaThreshold {
 /// - Online phase uses EWMA to track distribution drift.
 /// - Only **normal** observations update the EWMA, preventing anomaly contamination.
 /// - The adaptive threshold never drops below the MAD baseline (hard floor).
+/// - The EWMA is **pre-warmed** with all calibration scores during construction,
+///   eliminating the warmup delay that previously allowed false positives
+///   on borderline-normal samples at inference start.
 struct HybridAdaptiveThreshold {
     baseline_threshold: f32,
     ewma: EwmaThreshold,
@@ -233,8 +250,10 @@ impl HybridAdaptiveThreshold {
     /// - `alpha`: EWMA smoothing factor (0.05–0.2; smaller = more stable)
     /// - `k_ewma`: sensitivity for EWMA online threshold (default 3.0)
     ///
-    /// The baseline is the **maximum** of the MAD threshold and mean*4.0,
-    /// so it is never weaker than the old hardcoded threshold.
+    /// The baseline is the MAD-based threshold (median + k * 1.4826 * MAD).
+    /// The EWMA is pre-warmed with all calibration scores so that it is
+    /// immediately effective from the first inference sample — no online
+    /// warmup delay.
     fn from_calibration(scores: &[f32], k_mad: f32, alpha: f64, k_ewma: f64) -> Self {
         let mad_threshold = compute_mad_threshold(scores, k_mad);
         let mean = scores.iter().sum::<f32>() / scores.len() as f32;
@@ -242,9 +261,15 @@ impl HybridAdaptiveThreshold {
         // Removed the hardcoded mean*4.0 floor which was often too high.
         let baseline = mad_threshold;
         let var = scores.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / scores.len() as f32;
+        let mut ewma = EwmaThreshold::new(alpha, k_ewma, 0, mean as f64, var as f64);
+        // Pre-warm the EWMA with all calibration scores so that the online
+        // threshold is fully effective from the very first inference sample.
+        // This eliminates the NaN warmup period that previously allowed
+        // borderline-normal scores to slip past the baseline threshold.
+        ewma.warmup(scores);
         Self {
             baseline_threshold: baseline,
-            ewma: EwmaThreshold::new(alpha, k_ewma, 10, mean as f64, var as f64),
+            ewma,
         }
     }
 
@@ -253,14 +278,10 @@ impl HybridAdaptiveThreshold {
     /// - The effective threshold is the maximum of the EWMA threshold and
     ///   the MAD baseline — the threshold can only rise, never fall below baseline.
     fn update_and_check(&mut self, score: f32) -> (f32, bool) {
-        // Peek at the EWMA threshold before deciding
+        // EWMA is pre-warmed, so current_threshold() is always valid.
         let ewma_thresh = self.ewma.current_threshold();
-        let threshold = if ewma_thresh.is_nan() {
-            self.baseline_threshold
-        } else {
-            // The threshold can only rise; it never drops below baseline
-            ewma_thresh.max(self.baseline_threshold)
-        };
+        // The threshold can only rise; it never drops below baseline
+        let threshold = ewma_thresh.max(self.baseline_threshold);
 
         let is_anomaly = score > threshold;
 
@@ -430,7 +451,7 @@ fn main() {
     let actions = Tensor::zeros([1, 200, 2], &device);
 
     let mut optim = AdamConfig::new().init();
-    let lr = 1e-3;
+    let lr = 3e-3;
 
     for epoch in 1..=200 {
         let (z, pred_z, reconstructed_x, predicted_x) =
@@ -489,9 +510,9 @@ fn main() {
 
     let mut threshold_engine = HybridAdaptiveThreshold::from_calibration(
         &calibration_scores,
-        3.4, // k_mad: Increased from 2.5 to 3.4 to reduce false positives
+        3.8, // k_mad: sensitive enough for anomalies, robust against near-normal variance
         0.1, // alpha
-        3.4, // k_ewma: Increased from 2.5 to 3.4
+        3.8, // k_ewma: matches k_mad for consistency; EWMA is pre-warmed so effective immediately
     );
 
     let baseline = threshold_engine.baseline_threshold;
