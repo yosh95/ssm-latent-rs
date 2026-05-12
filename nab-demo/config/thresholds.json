@@ -1,16 +1,16 @@
 {
   "ssm_latent": {
     "standard": {
-      "threshold": 1.0,
-      "score": -57.11314389787109
+      "threshold": 0.9994352,
+      "score": -23.469454255707507
     },
     "reward_low_FP_rate": {
-      "threshold": 1.0,
-      "score": -58.87314342333103
+      "threshold": 0.9997539,
+      "score": -40.98624584072899
     },
     "reward_low_FN_rate": {
-      "threshold": 1.0,
-      "score": -139.11314389787108
+      "threshold": 0.9994044,
+      "score": -71.42122212756519
     }
   }
 }
