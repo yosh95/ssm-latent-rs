@@ -1,0 +1,19 @@
+[package]
+name = "nab-demo"
+version = "0.1.0"
+edition = "2024"
+default-run = "nab-anomaly-demo"
+
+[dependencies]
+ssm-latent-model = { path = "..", default-features = false, features = ["wgpu", "ndarray", "train"] }
+burn = { version = "0.21", default-features = false, features = ["std", "autodiff", "wgpu", "train", "ndarray"] }
+ndarray = { version = "0.17", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false }
+rand = { version = "0.10", default-features = false }
+csv = "1.3"
+chrono = { version = "0.4", features = ["serde"] }
+
+[[bin]]
+name = "nab-anomaly-demo"
+path = "src/main.rs"

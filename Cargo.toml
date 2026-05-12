@@ -5,6 +5,7 @@ members = [
     "game-playing-wasm",
     "log-anomaly-demo",
     "metronome-demo",
+    "nab-demo",
     "tiny-stories-jepa-demo",
 ]
 
