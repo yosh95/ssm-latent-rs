@@ -1,16 +1,18 @@
 use burn::backend::Autodiff;
 use burn::backend::wgpu::{Wgpu, WgpuDevice};
+use burn::module::AutodiffModule;
 use burn::optim::AdamConfig;
 use burn::optim::Optimizer;
 use burn::tensor::{Tensor, TensorData};
 use serde::Deserialize;
-use ssm_latent_model::latent::{LatentLossArgs, LatentPredictor};
+use ssm_latent_model::latent::{LatentLossArgs, LatentPredictor, LatentState};
 use ssm_latent_model::ssm::SsmConfig;
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 
 type MyBackend = Autodiff<Wgpu>;
+type InnerBackend = Wgpu;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -60,31 +62,20 @@ fn find_csv_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<(),
 
 /// Compute anomaly scores using MAD calibration + EWMA with contamination prevention.
 ///
-/// This replaces the broken sigmoid(z-4) scoring with a proper statistical approach:
-/// 1. Use the probationary period to calibrate baseline statistics (median, MAD)
-/// 2. Compute z-scores relative to the robust baseline
-/// 3. Update EWMA only on non-anomalous observations (contamination prevention)
-/// 4. Use a gentler nonlinear transform (sqrt) that preserves score discriminability
-/// 5. Min-max normalize to [0, 1] for NAB compatibility
+/// Phase 3 improvements:
+/// 1. MAD (Median Absolute Deviation) for robust baseline calibration
+/// 2. EWMA with contamination prevention — don't update baseline on likely anomalies
+/// 3. Absolute z-score for bidirectional anomaly detection
+/// 4. Percentile-based normalization (more robust than min-max)
+/// 5. Score the probationary period as 0 (not evaluated by NAB)
 fn compute_anomaly_scores(
     recon_errors: &[f32],
-    latent_errors: &[f32],
     probation_len: usize,
-    recon_weight: f32,
-    latent_weight: f32,
 ) -> Vec<f32> {
     let seq_len = recon_errors.len();
-    assert_eq!(seq_len, latent_errors.len());
-
-    // Combine errors with configurable weights
-    let combined: Vec<f32> = recon_errors
-        .iter()
-        .zip(latent_errors.iter())
-        .map(|(&r, &l)| r * recon_weight + l * latent_weight)
-        .collect();
 
     // === Phase 1: MAD calibration on probationary period ===
-    let calibration = &combined[..probation_len.min(combined.len())];
+    let calibration = &recon_errors[..probation_len.min(recon_errors.len())];
     let mut sorted_cal = calibration.to_vec();
     sorted_cal.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = sorted_cal[sorted_cal.len() / 2];
@@ -92,26 +83,25 @@ fn compute_anomaly_scores(
     // MAD (Median Absolute Deviation) — robust estimator of spread
     let mut abs_devs: Vec<f32> = sorted_cal.iter().map(|x| (x - median).abs()).collect();
     abs_devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mad = abs_devs[abs_devs.len() / 2] * 1.4826; // Scale factor for consistency with std dev
-    let robust_std = mad.max(1e-6); // Floor to prevent division by zero
+    let mad = abs_devs[abs_devs.len() / 2] * 1.4826; // Consistency factor for normal distribution
+    let robust_std = mad.max(1e-6);
 
     // === Phase 2: EWMA scoring with contamination prevention ===
-    let mut ewma_mean = median; // Initialize with robust calibration value
-    let mut ewma_var = robust_std * robust_std; // Initialize with MAD-based variance
-    let beta = 0.05; // EWMA smoothing factor (same as original, but better initialized)
+    let mut ewma_mean = median;
+    let mut ewma_var = robust_std * robust_std;
+    let beta = 0.03; // Slower adaptation for more stable baseline
 
     let mut z_scores: Vec<f32> = Vec::with_capacity(seq_len);
 
     for i in 0..seq_len {
-        let err = combined[i];
+        let err = recon_errors[i];
         let diff = err - ewma_mean;
         let std = ewma_var.sqrt().max(1e-6);
-        let z = diff.abs() / std; // Use |z| so anomalies in either direction are detected
+        let z = diff.abs() / std;
 
         z_scores.push(z);
 
         // Contamination prevention: only update EWMA on non-anomalous observations
-        // This prevents anomalies from polluting the baseline
         if z < 3.0 {
             ewma_mean = (1.0 - beta) * ewma_mean + beta * err;
             let dev = err - ewma_mean;
@@ -119,20 +109,21 @@ fn compute_anomaly_scores(
         }
     }
 
-    // === Phase 3: Min-Max normalization to [0, 1] for NAB ===
-    // NAB's sweeper.py expects scores in [0, 1] where higher = more anomalous
-    let max_z = z_scores.iter().fold(0.0f32, |a, &b| a.max(b));
-    let min_z = z_scores.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-    let range = (max_z - min_z).max(1e-8);
+    // === Phase 3: Percentile-based normalization to [0, 1] for NAB ===
+    // Use percentile ranks instead of min-max to be robust to outlier scores.
+    // Then apply a power transform to spread the distribution for better discriminability.
+    let mut z_sorted = z_scores.clone();
+    z_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    // Use sqrt transform for gentle nonlinear stretching (preserves discriminability)
     let scores: Vec<f32> = z_scores
         .iter()
         .map(|&z| {
-            let normalized = (z - min_z) / range;
-            // Square root stretches low values and compresses high values
-            // This is a much gentler transform than sigmoid(z-4)
-            normalized.sqrt().max(0.0).min(1.0)
+            // Percentile rank (linear interpolation)
+            let rank = z_sorted.partition_point(|&s| s < z) as f32;
+            let percentile = rank / seq_len as f32;
+            // Power transform: spread scores in the high-percentile region
+            // percentile^0.3 compresses low values and spreads high values
+            (percentile).powf(0.3).min(1.0)
         })
         .collect();
 
@@ -147,7 +138,7 @@ fn compute_anomaly_scores(
 fn main() -> Result<(), Box<dyn Error>> {
     let device = WgpuDevice::default();
     println!(
-        "\n{}=== NAB SSM+Latent Anomaly Detection (Phase 1+2 Fix) ==={}",
+        "\n{}=== NAB SSM+Latent Anomaly Detection (Phase 3: Streaming Inference) ==={}",
         BOLD, RESET
     );
 
@@ -160,12 +151,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     csv_files.sort();
 
     // ===== Training & Inference Configuration =====
-    let train_ratio = 0.50; // Use 50% for training (up from 15%)
-    let min_train = 100; // Minimum training samples
-    let epochs = 100; // More epochs (up from 50)
-    let learning_rate = 5e-4; // Lower LR for more stable training
+    let train_ratio = 0.50;
+    let min_train = 100;
+    let epochs = 100;
+    let learning_rate = 5e-4;
 
-    // Model configuration — slightly larger for better capacity
+    // Model configuration
     let config = SsmConfig {
         d_model: 64,
         d_state: 16,
@@ -213,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let train_count = ((seq_len as f32 * train_ratio) as usize).max(min_train);
         let train_data = &normalized_values[..train_count];
 
-        // ===== Phase 1: Training =====
+        // ===== Phase 1: Training (uses autodiff backend) =====
         let mut model = LatentPredictor::<MyBackend>::new(&config, 1, 1, &device);
         let mut optim = AdamConfig::new().init();
 
@@ -222,7 +213,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             &device,
         );
 
-        // WGPU training requires autodiff backend
         let zero_actions = Tensor::<MyBackend, 3>::from_data(
             TensorData::new(vec![0.0f32; train_count], [1, train_count, 1]),
             &device,
@@ -244,9 +234,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 reconstructed_x,
                 predicted_x,
                 original_x: train_tensor.clone(),
-                stability_weight: 0.1,  // Reduced from 1.0 — stability loss was too dominant
-                curvature_weight: 0.05, // Reduced from 0.5 — curvature was over-smoothing
-                recon_weight: 5.0,      // Increased from 2.0 — reconstruction quality matters
+                stability_weight: 0.1,
+                curvature_weight: 0.05,
+                recon_weight: 5.0,
             });
 
             let loss_val = loss.to_data().as_slice::<f32>().unwrap()[0];
@@ -261,60 +251,97 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!("  Final training loss: {:.6}", last_loss);
 
-        // ===== Phase 2: Inference =====
+        // Convert model to inner (non-autodiff) backend for faster inference
+        let model: LatentPredictor<InnerBackend> = model.valid();
+
+        // ===== Phase 2: Streaming Inference (one step at a time, state persists) =====
         let mut full_recon_err = Vec::with_capacity(seq_len);
-        let mut full_latent_err = Vec::with_capacity(seq_len);
 
-        // Process in larger chunks (10000 vs old 5000) to reduce boundary artifacts.
-        // For sequences shorter than 10000, this processes the entire sequence at once.
-        println!("  {}Inference:{} processing {} points", YELLOW, RESET, seq_len);
+        println!("  {}Inference:{} streaming {} points (step-by-step)", YELLOW, RESET, seq_len);
 
-        let chunk_size = 10000;
-        for start in (0..seq_len).step_by(chunk_size) {
-            let end = (start + chunk_size).min(seq_len);
-            let current_chunk = &normalized_values[start..end];
-            let chunk_tensor = Tensor::<MyBackend, 3>::from_data(
-                TensorData::new(current_chunk.to_vec(), [1, current_chunk.len(), 1]),
+        // Initialize SSM state for streaming inference
+        let d_inner = config.d_model * config.expand;
+        let n_heads = config.n_heads;
+        let d_state = config.d_state;
+        let mimo_rank = config.mimo_rank;
+        let d_head = d_inner / n_heads;
+        let d_head_mimo = d_head / mimo_rank;
+
+        let mut state = LatentState::<InnerBackend> {
+            h: Tensor::zeros([1, n_heads, d_state, d_head_mimo], &device),
+            prev_bx: None,
+            conv_state: None,
+        };
+
+        // Encode all data points first for step-by-step inference
+        // We step through the entire sequence using forward_step to maintain hidden state
+        let warmup_steps = 50; // Skip initial warmup steps for scoring
+
+        for i in 0..seq_len {
+            // Single timestep input
+            let x = Tensor::<InnerBackend, 2>::from_data(
+                TensorData::new(vec![normalized_values[i]], [1, 1]),
                 &device,
             );
-            let chunk_actions = Tensor::<MyBackend, 3>::from_data(
-                TensorData::new(vec![0.0f32; current_chunk.len()], [1, current_chunk.len(), 1]),
+            let action = Tensor::<InnerBackend, 2>::from_data(
+                TensorData::new(vec![0.0f32], [1, 1]),
                 &device,
             );
 
-            let (z, pred_z, reconstructed, _) =
-                model.forward(chunk_tensor.clone(), chunk_actions);
+            // Encode current observation
+            let z = model.encode(x.clone().unsqueeze_dim::<3>(1).swap_dims(0, 1));
+            let z_2d = z.clone().squeeze_dims::<2>(&[1]); // [1, d_model]
 
-            // Compute per-timestep scalar errors by taking mean over the feature dimension.
-            // reconstructed shape: [1, seq_len, 1], z/pred_z shape: [1, seq_len, d_model]
-            // We need one error value per timestep, so we mean-reduce over the last dim.
-            let r_err = (chunk_tensor.clone() - reconstructed)
-                .powf_scalar(2.0)
-                .mean_dim(2) // [1, seq_len, 1] → [1, seq_len] after squeeze
+            // Step the model: predicts next latent state
+            let (y, next_state) = model.step(z_2d.clone(), action, state);
+            state = next_state;
+
+            // Decode predicted next latent to get predicted next observation
+            let pred_z_3d = y.unsqueeze_dim::<3>(1); // [1, 1, d_model]
+            let predicted_x = model.decode(pred_z_3d);
+
+            // Decode current latent to get reconstructed current observation
+            let reconstructed_x = model.decode(z);
+
+            // Reconstruction error (predicted vs actual NEXT step)
+            let actual_next = if i + 1 < seq_len {
+                normalized_values[i + 1]
+            } else {
+                normalized_values[i]
+            };
+            let predicted_val = predicted_x
+                .clone()
                 .into_data()
                 .as_slice::<f32>()
-                .unwrap()
-                .to_vec();
-            let l_err = (z - pred_z)
-                .powf_scalar(2.0)
-                .mean_dim(2) // [1, seq_len, d_model] → [1, seq_len] after mean over features
+                .unwrap()[0];
+            let reconstructed_val = reconstructed_x
                 .into_data()
                 .as_slice::<f32>()
-                .unwrap()
-                .to_vec();
+                .unwrap()[0];
 
-            full_recon_err.extend(r_err);
-            full_latent_err.extend(l_err);
+            // Use prediction error (predicted next vs actual next) as primary signal
+            // Also include reconstruction error for the current step
+            let pred_err = (predicted_val - actual_next).powi(2);
+            let recon_err = (reconstructed_val - normalized_values[i]).powi(2);
+
+            // Combine: prediction error is more important for anomaly detection
+            let combined_err = 0.7 * pred_err + 0.3 * recon_err;
+
+            full_recon_err.push(combined_err);
         }
 
-        // ===== Phase 3: Compute Anomaly Scores (MAD + EWMA + Contamination Prevention) =====
+        // ===== Phase 3: Compute Anomaly Scores =====
         let probation_len = ((seq_len as f32 * 0.15) as usize).max(50);
+        
+        // Extend warmup: zero out the warmup period too (before probation)
+        // The model needs some steps to settle its hidden state
+        for i in 0..warmup_steps.min(full_recon_err.len()) {
+            full_recon_err[i] = 0.0;
+        }
+
         let scores = compute_anomaly_scores(
             &full_recon_err,
-            &full_latent_err,
             probation_len,
-            0.5, // recon_weight — balanced with latent
-            0.5, // latent_weight — balanced with recon
         );
 
         println!(
