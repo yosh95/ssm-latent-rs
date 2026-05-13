@@ -1,9 +1,27 @@
+//! Binary entry point for `ssm-latent-model`.
+//!
+//! This crate is primarily a library. Running the binary directly will
+//! display available demo commands.
+
 fn main() {
-    eprintln!("Note: This is the library crate root. To run a demo, use one of:");
-    eprintln!("  cargo run -p circle-world-demo --release");
-    eprintln!("  cargo run -p log-anomaly-demo --release");
-    eprintln!("  cargo run -p deterministic-ai-agent-demo --release");
-    eprintln!();
-    eprintln!("For WASM demos, see the game-playing-wasm/ or metronome-demo/ directories.");
-    std::process::exit(1);
+    println!("ssm-latent-model v{}", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("This is a library crate. To run demos, use one of the following:");
+    println!();
+    println!("  Native demos:");
+    println!("    cargo run -p circle-world-demo --release");
+    println!("    cargo run -p log-anomaly-demo --release");
+    println!("    cargo run -p deterministic-ai-agent-demo --release");
+    println!("    cargo run -p nab-demo --release");
+    println!("    cargo run -p tiny-stories-jepa-demo --release");
+    println!();
+    println!("  WASM demos (requires trunk):");
+    println!("    cd game-playing-wasm && trunk serve --release");
+    println!("    cd metronome-demo && trunk serve --release");
+    println!();
+    println!("  Benchmarks:");
+    println!("    cargo bench");
+    println!();
+    println!("  Tests:");
+    println!("    cargo test --all-targets --all-features");
 }

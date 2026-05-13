@@ -39,6 +39,78 @@ pub struct SsmConfig {
     pub conv_kernel: usize,
 }
 
+impl SsmConfig {
+    /// Validate the configuration parameters.
+    ///
+    /// Returns `Ok(())` if all constraints are satisfied, or an error
+    /// describing the first validation failure encountered.
+    ///
+    /// # Constraints
+    /// - `d_inner = d_model * expand` must be divisible by `n_heads`
+    /// - `d_head = d_inner / n_heads` must be divisible by `mimo_rank`
+    /// - `d_state` must be even (for complex rotation decomposition)
+    /// - `mimo_rank` must be greater than 0
+    /// - `conv_kernel` must be greater than 0 when `use_conv` is true
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.mimo_rank == 0 {
+            return Err(crate::error::ModelError::Config {
+                message: "mimo_rank must be greater than 0".into(),
+            });
+        }
+        if self.n_heads == 0 {
+            return Err(crate::error::ModelError::Config {
+                message: "n_heads must be greater than 0".into(),
+            });
+        }
+        if self.d_model == 0 {
+            return Err(crate::error::ModelError::Config {
+                message: "d_model must be greater than 0".into(),
+            });
+        }
+        if self.d_state == 0 {
+            return Err(crate::error::ModelError::Config {
+                message: "d_state must be greater than 0".into(),
+            });
+        }
+        if !self.d_state.is_multiple_of(2) {
+            return Err(crate::error::ModelError::Config {
+                message: format!(
+                    "d_state must be even for complex rotation (got {})",
+                    self.d_state
+                ),
+            });
+        }
+
+        let d_inner = self.d_model * self.expand;
+        if !d_inner.is_multiple_of(self.n_heads) {
+            return Err(crate::error::ModelError::Config {
+                message: format!(
+                    "d_inner ({}) must be divisible by n_heads ({})",
+                    d_inner, self.n_heads
+                ),
+            });
+        }
+
+        let d_head = d_inner / self.n_heads;
+        if !d_head.is_multiple_of(self.mimo_rank) {
+            return Err(crate::error::ModelError::Config {
+                message: format!(
+                    "d_head ({}) must be divisible by mimo_rank ({})",
+                    d_head, self.mimo_rank
+                ),
+            });
+        }
+
+        if self.use_conv && self.conv_kernel == 0 {
+            return Err(crate::error::ModelError::Config {
+                message: "conv_kernel must be greater than 0 when use_conv is true".into(),
+            });
+        }
+
+        Ok(())
+    }
+}
+
 /// A selective state space model block with complex rotation dynamics.
 ///
 /// This block implements the core SSM computation following Mamba-style architecture:

@@ -73,10 +73,29 @@ fn test_save_load_consistency() {
     let loaded = LatentPredictor::<B>::new(&config, 8, 2, &device);
     let _loaded = loaded.load(file_path, &device).expect("Load failed");
 
-    // Compare one weight
-    // let original_raw = predictor.encoder.weight.val().into_data();
-    // let loaded_raw = loaded.encoder.weight.val().into_data();
-    // assert_eq!(original_raw, loaded_raw);
-
     let _ = std::fs::remove_file(format!("{}.bin", file_path));
+}
+
+#[test]
+fn test_config_validation() {
+    use ssm_latent_model::error::ModelError;
+
+    // Valid config should pass
+    let valid = SsmConfig::new(16, 8, 2, 2, 1);
+    assert!(valid.validate().is_ok());
+
+    // Odd d_state should fail
+    let bad_state = SsmConfig::new(16, 7, 2, 2, 1);
+    let err = bad_state.validate().unwrap_err();
+    assert!(matches!(err, ModelError::Config { .. }));
+
+    // d_inner not divisible by n_heads
+    let bad_heads = SsmConfig::new(16, 8, 2, 7, 1);
+    let err = bad_heads.validate().unwrap_err();
+    assert!(matches!(err, ModelError::Config { .. }));
+
+    // d_head not divisible by mimo_rank
+    let bad_mimo = SsmConfig::new(16, 8, 2, 2, 3);
+    let err = bad_mimo.validate().unwrap_err();
+    assert!(matches!(err, ModelError::Config { .. }));
 }

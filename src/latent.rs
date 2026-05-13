@@ -181,23 +181,27 @@ impl<B: Backend> LatentPredictor<B> {
         )
     }
 
-    pub fn save(&self, file_path: &str) -> Result<(), std::io::Error> {
+    pub fn save(&self, file_path: &str) -> crate::error::Result<()> {
+        tracing::debug!(path = %file_path, "Saving model weights");
         let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
         let path = std::path::Path::new(file_path);
 
         recorder
             .record(self.clone().into_record(), path.to_path_buf())
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+            .map_err(|e| crate::error::ModelError::Serialization(e.to_string()))?;
+        tracing::info!(path = %file_path, "Model saved successfully");
         Ok(())
     }
 
-    pub fn load(self, file_path: &str, device: &B::Device) -> Result<Self, std::io::Error> {
+    pub fn load(self, file_path: &str, device: &B::Device) -> crate::error::Result<Self> {
+        tracing::debug!(path = %file_path, "Loading model weights");
         let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
         let path = std::path::Path::new(file_path);
 
         let record = recorder
             .load(path.to_path_buf(), device)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+            .map_err(|e| crate::error::ModelError::Serialization(e.to_string()))?;
+        tracing::info!(path = %file_path, "Model loaded successfully");
         Ok(self.load_record(record))
     }
 

@@ -13,7 +13,6 @@ members = [
 name = "ssm-latent-model"
 version = "0.1.0"
 edition = "2024"
-default-run = "circle-world-demo"
 
 [lib]
 path = "src/lib.rs"
@@ -25,12 +24,17 @@ ndarray = { version = "0.17.2", default-features = false, features = ["std"] }
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["ndarray", "std", "download-binaries", "tls-rustls" ], optional = true }
 rand = { version = "0.10", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+thiserror = { version = "2", default-features = false }
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+criterion = "0.6"
 
 [features]
 default = ["std", "ndarray", "autodiff"]
-std = ["burn/std", "anyhow/std", "ndarray/std"]
+std = ["burn/std", "anyhow/std", "ndarray/std", "tracing/std"]
 ndarray = ["std", "burn/ndarray"]
 autodiff = ["burn/autodiff"]
 wgpu = ["burn/wgpu"]
@@ -40,4 +44,9 @@ ort = ["dep:ort"]
 [[bin]]
 name = "circle-world-demo"
 path = "circle-world-demo/src/main.rs"
+
+[[bench]]
+name = "training_step"
+harness = false
+path = "benchmark/bench.rs"
 

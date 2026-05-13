@@ -17,6 +17,7 @@
 //! - **JEPA-style latent prediction** with stability and curvature losses
 //! - **Cross-platform**: CPU (NdArray), GPU (WGPU), and WASM backends via Burn
 
+pub mod error;
 pub mod latent;
 pub mod multimodal;
 pub mod preprocess;
