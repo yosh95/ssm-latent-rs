@@ -17,7 +17,6 @@ type InnerBackend = Wgpu;
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const GREEN: &str = "\x1b[32m";
-const YELLOW: &str = "\x1b[33m";
 const CYAN: &str = "\x1b[36m";
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -60,10 +59,7 @@ fn find_csv_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<(),
     Ok(())
 }
 
-fn compute_anomaly_scores(
-    recon_errors: &[f32],
-    probation_len: usize,
-) -> Vec<f32> {
+fn compute_anomaly_scores(recon_errors: &[f32], probation_len: usize) -> Vec<f32> {
     let seq_len = recon_errors.len();
     let calibration = &recon_errors[..probation_len.min(recon_errors.len())];
     let mut sorted_cal = calibration.to_vec();
@@ -81,8 +77,7 @@ fn compute_anomaly_scores(
 
     let mut z_scores: Vec<f32> = Vec::with_capacity(seq_len);
 
-    for i in 0..seq_len {
-        let err = recon_errors[i];
+    for &err in recon_errors.iter().take(seq_len) {
         let diff = err - ewma_mean;
         let std = ewma_var.sqrt().max(1e-6);
         let z = diff.abs() / std;
@@ -156,7 +151,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let parts: Vec<_> = relative_path.components().collect();
-        if parts.len() < 2 { continue; }
+        if parts.len() < 2 {
+            continue;
+        }
         let category = parts[0].as_os_str().to_str().unwrap();
         let filename = parts[parts.len() - 1].as_os_str().to_str().unwrap();
 
@@ -187,14 +184,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             &device,
         );
 
-        for epoch in 1..=epochs {
+        for _epoch in 1..=epochs {
             let (z, pred_z, reconstructed_x, predicted_x) =
                 model.forward(train_tensor.clone(), zero_actions.clone());
 
             let loss = model.loss(LatentLossArgs {
-                z, pred_z, reconstructed_x, predicted_x,
+                z,
+                pred_z,
+                reconstructed_x,
+                predicted_x,
                 original_x: train_tensor.clone(),
-                stability_weight: 0.1, curvature_weight: 0.05, recon_weight: 5.0,
+                stability_weight: 0.1,
+                curvature_weight: 0.05,
+                recon_weight: 5.0,
             });
 
             let grads = loss.backward();
@@ -217,8 +219,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
 
         for i in 0..seq_len {
-            let x = Tensor::<InnerBackend, 2>::from_data(TensorData::new(vec![normalized_values[i]], [1, 1]), &device);
-            let action = Tensor::<InnerBackend, 2>::from_data(TensorData::new(vec![0.0f32], [1, 1]), &device);
+            let x = Tensor::<InnerBackend, 2>::from_data(
+                TensorData::new(vec![normalized_values[i]], [1, 1]),
+                &device,
+            );
+            let action = Tensor::<InnerBackend, 2>::from_data(
+                TensorData::new(vec![0.0f32], [1, 1]),
+                &device,
+            );
 
             let z = model.encode(x.clone().unsqueeze_dim::<3>(1).swap_dims(0, 1));
             let z_2d = z.clone().squeeze_dims::<2>(&[1]);
@@ -232,7 +240,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let predicted_val = predicted_x.into_data().as_slice::<f32>().unwrap()[0];
             let reconstructed_val = reconstructed_x.into_data().as_slice::<f32>().unwrap()[0];
 
-            let actual_next = if i + 1 < seq_len { normalized_values[i + 1] } else { normalized_values[i] };
+            let actual_next = if i + 1 < seq_len {
+                normalized_values[i + 1]
+            } else {
+                normalized_values[i]
+            };
             let pred_err = (predicted_val - actual_next).powi(2);
             let recon_err = (reconstructed_val - normalized_values[i]).powi(2);
 
@@ -240,18 +252,30 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let probation_len = ((seq_len as f32 * 0.15) as usize).max(50);
-        for i in 0..50.min(full_recon_err.len()) { full_recon_err[i] = 0.0; }
+        for i in 0..50.min(full_recon_err.len()) {
+            full_recon_err[i] = 0.0;
+        }
 
         let scores = compute_anomaly_scores(&full_recon_err, probation_len);
 
         std::fs::create_dir_all(&result_dir)?;
         let mut wtr = csv::Writer::from_path(&final_result_path)?;
-        wtr.write_record(&["timestamp", "value", "anomaly_score"])?;
+        wtr.write_record(["timestamp", "value", "anomaly_score"])?;
         for i in 0..raw_records.len() {
-            wtr.write_record(&[&raw_records[i].timestamp, &raw_values[i].to_string(), &scores[i].to_string()])?;
+            wtr.write_record([
+                &raw_records[i].timestamp,
+                &raw_values[i].to_string(),
+                &scores[i].to_string(),
+            ])?;
         }
-        println!("  {}Saved {}:{} {}/{}", GREEN, detector_name, RESET, category, filename);
+        println!(
+            "  {}Saved {}:{} {}/{}",
+            GREEN, detector_name, RESET, category, filename
+        );
     }
-    println!("\n{}All datasets processed.{}  Run `python evaluate_nab.py`.", BOLD, RESET);
+    println!(
+        "\n{}All datasets processed.{}  Run `python evaluate_nab.py`.",
+        BOLD, RESET
+    );
     Ok(())
 }

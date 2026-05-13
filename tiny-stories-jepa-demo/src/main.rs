@@ -25,7 +25,9 @@ async fn main() -> anyhow::Result<()> {
     println!("================================================\n");
 
     // Load configuration
-    let config_str = fs::read_to_string("config.toml").expect("Failed to read config.toml");
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let config_path = std::path::Path::new(manifest_dir).join("config.toml");
+    let config_str = fs::read_to_string(config_path).expect("Failed to read config.toml");
     let mut full_config: FullConfig =
         toml::from_str(&config_str).expect("Failed to parse config.toml");
 

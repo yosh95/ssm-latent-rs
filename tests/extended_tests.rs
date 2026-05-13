@@ -33,7 +33,7 @@ fn test_curvature_loss_exact_sequence() {
 
     let data_vec: Vec<f32> = [0.0f32, 1.0, 2.0]
         .iter()
-        .flat_map(|&v| std::iter::repeat(v).take(4))
+        .flat_map(|&v| std::iter::repeat_n(v, 4))
         .collect();
     let z = Tensor::<B, 3>::from_data(TensorData::new(data_vec, [1, 3, 4]), &device);
     let loss = curvature_loss(z).into_data().as_slice::<f32>().unwrap()[0];
@@ -87,10 +87,9 @@ fn test_ssm_mimo_rank_equivalence() {
     }
 
     let y_sequential = Tensor::cat(y_step_list, 1);
-    y_parallel.to_data().assert_approx_eq::<f32>(
-        &y_sequential.to_data(),
-        burn::tensor::Tolerance::default(),
-    );
+    y_parallel
+        .to_data()
+        .assert_approx_eq::<f32>(&y_sequential.to_data(), burn::tensor::Tolerance::default());
 }
 
 #[test]

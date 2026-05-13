@@ -2,15 +2,11 @@ use burn::backend::{Autodiff, NdArray, Wgpu, ndarray::NdArrayDevice, wgpu::WgpuD
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::Tensor;
 use burn::tensor::backend::AutodiffBackend;
-use criterion::{Criterion, BatchSize, criterion_group, criterion_main};
-use ssm_latent_model::latent::{LatentPredictor, LatentLossArgs};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use ssm_latent_model::latent::{LatentLossArgs, LatentPredictor};
 use ssm_latent_model::ssm::SsmConfig;
 
-fn benchmark_training_step<B: AutodiffBackend>(
-    c: &mut Criterion,
-    device: B::Device,
-    name: &str,
-) {
+fn benchmark_training_step<B: AutodiffBackend>(c: &mut Criterion, device: B::Device, name: &str) {
     let config = SsmConfig::new(128, 32, 2, 8, 4);
     let input_dim = 64;
     let action_dim = 16;

@@ -206,7 +206,9 @@ impl<B: Backend> SsmBlock<B> {
             None
         };
 
-        let dt_proj = LinearConfig::new(d_inner, n_heads).with_bias(true).init(device);
+        let dt_proj = LinearConfig::new(d_inner, n_heads)
+            .with_bias(true)
+            .init(device);
         // Initialize dt_proj bias to a small negative value so that initial delta is small
         let dt_bias = Tensor::full([n_heads], -3.1, device);
         let dt_proj = Linear {

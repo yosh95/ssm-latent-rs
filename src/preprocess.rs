@@ -46,7 +46,10 @@ impl LogEmbedder {
             .commit_from_file(model_path)
             .with_context(|| "Failed to create ORT session")?;
 
-        Ok(Self { session: Arc::new(Mutex::new(session)), tokenizer })
+        Ok(Self {
+            session: Arc::new(Mutex::new(session)),
+            tokenizer,
+        })
     }
 
     pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
@@ -56,7 +59,11 @@ impl LogEmbedder {
             .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
 
         let ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
-        let mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&x| x as i64).collect();
+        let mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .map(|&x| x as i64)
+            .collect();
         let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&x| x as i64).collect();
         let seq = ids.len();
 
@@ -70,7 +77,10 @@ impl LogEmbedder {
             "token_type_ids" => OrtTensor::from_array(token_type_ids)?,
         ];
 
-        let mut session = self.session.lock().map_err(|_| anyhow::anyhow!("Failed to lock session"))?;
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Failed to lock session"))?;
         let outputs = session.run(inputs)?;
         let embeddings = outputs[0].try_extract_array::<f32>()?;
 
