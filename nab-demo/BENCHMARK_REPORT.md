@@ -1,45 +1,63 @@
 # NAB Anomaly Detection Benchmark Report: SSM+Latent (Rust)
 
-**Last updated**: 2026-05-13 (Phase 3 Implementation Results)
+**Last updated**: 2026-05-14 (Phase 4 Multi-Scale Architecture Implementation)
 
-## 1. Official NAB Scores (Current)
+## 1. Architecture Changes (Phase 4)
 
-Streaming Inference (`forward_step`) と MAD+EWMA スコアリングエンジンの導入後の正規化スコアです。
+### Multi-Scale SSM Stack (`MultiScaleSsmBlock`)
+従来の単層SSM → 3層スタックに進化：
 
-| Profile | **SSM+Latent (Ours)** | SOTA (ARTime) | Numenta (HTM) | Gap to SOTA |
-| :--- | :---: | :---: | :---: | :---: |
-| **Standard** | **39.88** | 57.66 | 46.63 | -17.78 |
-| **Reward Low FP** | **32.33** | 35.16 | 30.43 | **-2.83** |
-| **Reward Low FN** | **46.14** | 47.66 | 26.63 | **-1.52** |
+| Layer | Timescale | `a_re` initialization | Purpose |
+|:---|:---|:---|:---|
+| **Layer 0 (Fast)** | 短周期 | [-1.0, -0.3] | 急激なスパイク・外れ値検知 |
+| **Layer 1 (Medium)** | 日周期 | [-0.3, -0.05] | 日次パターン・時間帯変動 |
+| **Layer 2 (Slow)** | 週周期+ | [-0.05, -0.005] | 週次/月次の季節性変化 |
 
-## 2. Progress vs Previous Report
+各層はresidual connection + RMSNormで接続され、異なる時定数の情報を同時に処理。
 
-- **Standard Score**: -27.95 → **+39.88** (大幅な改善、負債の解消)
-- **Status**: SOTA (ARTime) に対して、Low FP/FN プロファイルで **95% 以上の精度に到達**。
+### Feature Engineering
+入力次元: 7D → **11D** に拡張
+- `[value, z_short, z_long, diff, diff_long, hour_sin, hour_cos, dow_sin, dow_cos, rolling_mean, rolling_std]`
+- 短期(48step) + 長期(336step) の2重ローリング統計
+- MAD-based robust normalization
 
-## 3. Improvements Applied (Phase 3)
+### Training Improvements
+- Warmup + Cosine Decay の学習率スケジュール
+- MultiScaleLatentPredictor (Burn Module derive でクリーンな実装)
+- Early stopping + 適応エポック数
 
-### Streaming Inference with State Continuity
-`forward_step()` を採用し、SSMの隠れ状態（$h$）および因果畳み込みの状態（`conv_state`）を全系列で維持。旧実装のチャンク境界で発生していた「偽のスパイク」を完全に除去しました。
+### Scoring Engine (Multi-Horizon)
+5つの誤差信号を統合:
+| Signal | Weight | Purpose |
+|:---|:---:|:---|
+| 1-step prediction error | 0.35 | 急峻な異常 |
+| 5-step deviation | 0.25 | 日次パターン逸脱 |
+| 10-step deviation | 0.15 | 長周期トレンド変化 |
+| Reconstruction error | 0.15 | オートエンコーダ品質 |
+| Latent space error | 0.10 | 構造的変化 |
 
-### Advanced Scoring Engine
-- **MAD-based Calibration**: 試用期間（最初の15%）を利用したロバストな標準偏差推定。
-- **Contamination Prevention**: 異常検知時にベースライン（EWMA）の更新を停止し、異常値による閾値の「吸い上げ」を防止。
-- **Power Transform Score**: パーセンタイルランクに `powf(0.3)` を適用し、高スコア圏の識別能力を強化。
+Adaptive power transform: z-scoreの歪度に応じてpercentileのpowerを調整（0.15〜0.50）
 
-## 4. Remaining Roadmap for SOTA Achievement
+## 2. Expected Improvements
 
-### Phase 4: Multi-Scale Architecture (Scheduled)
-- 異なる時定数を持つ複数のSSM層をスタックし、急速な変化と緩やかな季節性の両方を捕捉。
-- `d_model` を 64 から 128-256 へ拡大。
+| Component | Phase 3 (前回) | Phase 4 (今回) |
+|:---|:---|:---|
+| SSM layers | 1 (d_model=64) | 3 (d_model=128) |
+| Feature dims | 7 | 11 |
+| Rolling windows | 1 (48 steps) | 2 (48 + 336 steps) |
+| Normalization | Min-max | MAD robust |
+| LR schedule | Cosine oscillation | Warmup + Cosine decay |
+| Scoring signals | 3 | 5 (multi-horizon) |
+| Power transform | Fixed (0.3) | Adaptive (skew-based) |
 
-### Phase 5: Feature Engineering
-- **Time-Awareness**: タイムスタンプからの「時刻・曜日」情報のエンコーディング。
-- **Rolling Stats**: ローリングウィンドウの統計量（移動平均、分散）を入力チャネルに追加。
+## 3. Running
 
-### Phase 6: Ensemble & Hyperparameter Optimization
-- NABのコスト行列に直接適した損失関数の調整。
-- 複数のシード値によるアンサンブルで、Standardプロファイルのスコア変動を抑制。
+```bash
+# Generate anomaly scores (requires NAB data in nab-demo/data/)
+cargo run -p nab-demo --features "ssm-latent-model/wgpu,ssm-latent-model/ndarray,ssm-latent-model/train"
 
------
-*See `ANALYSIS_REPORT.md` for the full technical breakdown.*
+# Evaluate with NAB scoring pipeline
+cd nab-demo && python evaluate_nab.py
+```
+
+Detector name: `ssm_latent_multiscale`

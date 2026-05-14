@@ -6,6 +6,245 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Tensor};
 use core::f32::consts::PI;
 
+/// Configuration for a multi-scale stacked SSM block.
+///
+/// Unlike a single [`SsmBlock`], this stacks `n_layers` SSM blocks with
+/// different timescale initializations, enabling the model to capture
+/// both rapid transients (short timescale) and slow seasonal patterns
+/// (long timescale) simultaneously.
+///
+/// Each layer's SSM has the same architecture but different `a_re`
+/// initialization ranges to bias different layers toward different
+/// effective timescales.
+#[derive(Config, Debug)]
+pub struct MultiScaleSsmConfig {
+    /// Model dimension shared across all layers
+    pub d_model: usize,
+    /// State space dimension (must be even)
+    pub d_state: usize,
+    /// Inner dimension multiplier
+    pub expand: usize,
+    /// Number of attention heads
+    pub n_heads: usize,
+    /// Multi-input multi-output rank
+    pub mimo_rank: usize,
+    /// Number of stacked SSM layers
+    #[config(default = 3)]
+    pub n_layers: usize,
+    /// Whether to use causal 1D convolution
+    #[config(default = true)]
+    pub use_conv: bool,
+    /// Kernel size for causal convolution
+    #[config(default = 4)]
+    pub conv_kernel: usize,
+    /// Dropout rate between layers (0.0 = no dropout)
+    #[config(default = 0.0)]
+    pub dropout: f64,
+}
+
+impl MultiScaleSsmConfig {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.n_layers == 0 {
+            return Err(crate::error::ModelError::Config {
+                message: "n_layers must be > 0".into(),
+            });
+        }
+        // Validate using single-layer config
+        SsmConfig::new(
+            self.d_model,
+            self.d_state,
+            self.expand,
+            self.n_heads,
+            self.mimo_rank,
+        )
+        .with_use_conv(self.use_conv)
+        .with_conv_kernel(self.conv_kernel)
+        .validate()
+    }
+}
+
+/// Multi-scale stacked SSM block.
+///
+/// Stacks `n_layers` SSM blocks with residual connections and layer
+/// normalization between them. Each layer has a different timescale
+/// initialization:
+///
+/// - **Layer 0 (fast)**: `a_re` in [-1.0, -0.3] — rapid decay, sensitive to short-term transients
+/// - **Layer 1 (medium)**: `a_re` in [-0.3, -0.05] — moderate decay, captures daily patterns
+/// - **Layer 2+ (slow)**: `a_re` in [-0.05, -0.005] — slow decay, models weekly/monthly seasonality
+///
+/// This design is inspired by the multi-resolution state space approach,
+/// where different layers specialize in different frequency bands.
+#[derive(Module, Debug)]
+pub struct MultiScaleSsmBlock<B: Backend> {
+    pub layers: Vec<SsmBlock<B>>,
+    pub norms: Vec<RmsNorm<B>>,
+    pub n_layers: usize,
+    pub d_model: usize,
+    pub d_inner: usize,
+    pub d_state: usize,
+    pub n_heads: usize,
+    pub mimo_rank: usize,
+}
+
+impl<B: Backend> MultiScaleSsmBlock<B> {
+    pub fn new(config: &MultiScaleSsmConfig, device: &B::Device) -> Self {
+        let mut layers = Vec::with_capacity(config.n_layers);
+        let mut norms = Vec::with_capacity(config.n_layers);
+
+        for layer_idx in 0..config.n_layers {
+            // Compute timescale-appropriate a_re range for this layer
+            let (a_re_min, a_re_max) = match layer_idx {
+                0 => (-1.0, -0.3),    // Fast: rapid decay
+                1 => (-0.3, -0.05),   // Medium: moderate decay
+                _ => (-0.05, -0.005), // Slow: very slow decay
+            };
+
+            let mut block = SsmBlock::new(
+                &SsmConfig::new(
+                    config.d_model,
+                    config.d_state,
+                    config.expand,
+                    config.n_heads,
+                    config.mimo_rank,
+                )
+                .with_use_conv(config.use_conv && layer_idx == 0) // conv only on first layer
+                .with_conv_kernel(config.conv_kernel),
+                device,
+            );
+
+            // Override a_re with layer-specific initialization
+            block.a_re = Param::from_tensor(Tensor::random(
+                [config.n_heads, config.d_state],
+                Distribution::Uniform(a_re_min as f64, a_re_max as f64),
+                device,
+            ));
+
+            layers.push(block);
+            norms.push(RmsNormConfig::new(config.d_model).init(device));
+        }
+
+        Self {
+            layers,
+            norms,
+            n_layers: config.n_layers,
+            d_model: config.d_model,
+            d_inner: config.d_model * config.expand,
+            d_state: config.d_state,
+            n_heads: config.n_heads,
+            mimo_rank: config.mimo_rank,
+        }
+    }
+
+    /// Forward pass through all stacked layers with residual connections.
+    ///
+    /// Uses Pre-LN pattern: `x = x + layer(norm(x))` with output scaling for stability.
+    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+        let num_layers_recip = 1.0f64 / self.n_layers as f64;
+        let mut out = x;
+        for (layer, norm) in self.layers.iter().zip(self.norms.iter()) {
+            let residual = out.clone();
+            let normalized = norm.forward(out);
+            let y = layer.forward(normalized);
+            // Scale residual contribution to prevent activation explosion
+            out = (y.mul_scalar(num_layers_recip) + residual)
+                .clamp(-100.0, 100.0);
+        }
+        out
+    }
+
+    /// Sequential forward step for autoregressive inference.
+    pub fn forward_step(
+        &self,
+        x: Tensor<B, 2>,
+        prev_states: &MultiScaleState<B>,
+    ) -> (Tensor<B, 2>, MultiScaleState<B>) {
+        let num_layers_recip = 1.0f64 / self.n_layers as f64;
+        let mut out = x;
+        let mut new_states = Vec::with_capacity(self.n_layers);
+        let mut new_conv_states = Vec::with_capacity(self.n_layers);
+
+        for (i, (layer, norm)) in self.layers.iter().zip(self.norms.iter()).enumerate() {
+            let residual = out.clone();
+            let normalized = norm.forward(out);
+            let (y, next_h, current_bx, next_conv_state) = layer.forward_step(
+                normalized,
+                prev_states.h[i].clone(),
+                prev_states.prev_bx[i].clone(),
+                if i == 0 && self.layers[0].conv1d.is_some() {
+                    prev_states.conv_state[i].clone()
+                } else {
+                    None
+                },
+            );
+            out = (y.mul_scalar(num_layers_recip) + residual)
+                .clamp(-100.0, 100.0);
+            new_states.push((next_h, current_bx));
+            new_conv_states.push(next_conv_state);
+        }
+
+        let (hs, prev_bxs): (Vec<_>, Vec<_>) = new_states.into_iter().unzip();
+
+        (
+            out,
+            MultiScaleState {
+                h: hs,
+                prev_bx: prev_bxs.into_iter().map(Some).collect(),
+                conv_state: new_conv_states,
+            },
+        )
+    }
+}
+
+/// Mutable state for multi-scale SSM autoregressive inference.
+#[derive(Clone)]
+pub struct MultiScaleState<B: Backend> {
+    /// SSM hidden states: one per layer, each `[batch, n_heads, d_state, d_head_mimo]`
+    pub h: Vec<Tensor<B, 4>>,
+    /// Previous B·x contributions: one per layer
+    pub prev_bx: Vec<Option<Tensor<B, 4>>>,
+    /// Convolution states: one per layer (None if no conv)
+    pub conv_state: Vec<Option<Tensor<B, 3>>>,
+}
+
+impl<B: Backend> MultiScaleState<B> {
+    pub fn zeros(
+        batch: usize,
+        n_layers: usize,
+        n_heads: usize,
+        d_state: usize,
+        d_head_mimo: usize,
+        use_conv: bool,
+        d_inner: usize,
+        conv_kernel: usize,
+        device: &B::Device,
+    ) -> Self {
+        let h = (0..n_layers)
+            .map(|_| Tensor::zeros([batch, n_heads, d_state, d_head_mimo], device))
+            .collect();
+        let prev_bx = (0..n_layers).map(|_| None).collect();
+        let conv_state = if use_conv {
+            (0..n_layers)
+                .map(|i| {
+                    if i == 0 {
+                        Some(Tensor::zeros([batch, d_inner, conv_kernel - 1], device))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            (0..n_layers).map(|_| None).collect()
+        };
+
+        Self {
+            h,
+            prev_bx,
+            conv_state,
+        }
+    }
+}
+
 /// Configuration for the SSM (State Space Model) block.
 ///
 /// This implements a Mamba-style selective state space model with complex rotation
