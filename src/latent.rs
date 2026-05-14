@@ -1,4 +1,4 @@
-use crate::ssm::{SsmBlock, SsmConfig};
+use crate::ssm::{MultiScaleSsmBlock, MultiScaleSsmConfig, MultiScaleState, SsmBlock, SsmConfig};
 use burn::module::{Module, Param};
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::Tensor;
@@ -318,4 +318,167 @@ pub fn stability_loss<B: Backend>(z: Tensor<B, 3>, w: Tensor<B, 2>) -> Tensor<B,
     let loss_var = (var - 1.0).powf_scalar(2.0).mean();
 
     (loss_mean + loss_var).unsqueeze()
+}
+
+// ─── Multi-Scale Latent Predictor ────────────────────────────────────────
+
+/// Multi-scale latent predictor using stacked SSM layers with different timescales.
+///
+/// This extends the standard [`LatentPredictor`] by replacing the single
+/// [`SsmBlock`] with a [`MultiScaleSsmBlock`], which stacks multiple SSM
+/// layers with different decay-rate initializations to capture:
+/// - **Fast transients** (layer 0, rapid decay)
+/// - **Daily patterns** (layer 1, moderate decay)
+/// - **Weekly/seasonal patterns** (layer 2+, slow decay)
+///
+/// The multi-scale architecture is critical for anomaly detection on NAB,
+/// where anomalies manifest across different time horizons.
+#[derive(Module, Debug)]
+pub struct MultiScaleLatentPredictor<B: Backend> {
+    /// Encoder: maps observations to latent space
+    pub encoder: Linear<B>,
+    /// Decoder: reconstructs observations from latent
+    pub decoder: Linear<B>,
+    /// Action encoder: maps actions to latent space (can receive zero actions for unsupervised mode)
+    pub action_encoder: Linear<B>,
+    /// Fusion: concatenates latent observation + latent action
+    pub fusion: Linear<B>,
+    /// Multi-scale stacked SSM block
+    pub ssm: MultiScaleSsmBlock<B>,
+    /// Fixed random projection buffer for stability loss
+    pub stability_projections: Param<Tensor<B, 2>>,
+    /// Model dimension
+    pub d_model: usize,
+}
+
+impl<B: Backend> MultiScaleLatentPredictor<B> {
+    pub fn new(
+        config: &MultiScaleSsmConfig,
+        input_dim: usize,
+        action_dim: usize,
+        device: &B::Device,
+    ) -> Self {
+        let d_model = config.d_model;
+
+        let encoder = LinearConfig::new(input_dim, d_model).init(device);
+        let decoder = LinearConfig::new(d_model, input_dim).init(device);
+        let action_encoder = LinearConfig::new(action_dim, d_model).init(device);
+        let fusion = LinearConfig::new(d_model * 2, d_model).init(device);
+        let ssm = MultiScaleSsmBlock::new(config, device);
+
+        // Fixed random projections for stability loss
+        let stability_projections = Tensor::<B, 2>::random(
+            [d_model, 16],
+            burn::tensor::Distribution::Normal(0.0, 1.0),
+            device,
+        );
+        let norm = stability_projections
+            .clone()
+            .powf_scalar(2.0)
+            .sum_dim(0)
+            .sqrt()
+            + 1e-6;
+        let stability_projections = stability_projections / norm;
+
+        Self {
+            encoder,
+            decoder,
+            action_encoder,
+            fusion,
+            ssm,
+            stability_projections: Param::from_tensor(stability_projections.detach()),
+            d_model,
+        }
+    }
+
+    pub fn encode(&self, observations: Tensor<B, 3>) -> Tensor<B, 3> {
+        self.encoder.forward(observations)
+    }
+
+    pub fn decode(&self, z: Tensor<B, 3>) -> Tensor<B, 3> {
+        self.decoder.forward(z)
+    }
+
+    /// Forward pass: encode → fuse with actions → multi-scale SSM → decode.
+    ///
+    /// Returns (z, predicted_z, reconstructed_x, predicted_x).
+    pub fn forward(
+        &self,
+        observations: Tensor<B, 3>,
+        actions: Tensor<B, 3>,
+    ) -> (Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>) {
+        let z = self.encode(observations);
+        let a = self.action_encoder.forward(actions);
+        let u_concat = Tensor::cat(vec![z.clone(), a], 2);
+        let u = self.fusion.forward(u_concat);
+        let predicted_z = self.ssm.forward(u);
+
+        let reconstructed_x = self.decode(z.clone());
+        let predicted_x = self.decode(predicted_z.clone());
+
+        (z, predicted_z, reconstructed_x, predicted_x)
+    }
+
+    /// Autoregressive step for streaming inference.
+    pub fn step(
+        &self,
+        z_prev: Tensor<B, 2>,
+        action: Tensor<B, 2>,
+        state: MultiScaleState<B>,
+    ) -> (Tensor<B, 2>, MultiScaleState<B>) {
+        let a = self.action_encoder.forward(action.unsqueeze_dim::<3>(1));
+        let [batch, _seq, d_model] = a.dims();
+        let a = a.reshape([batch, d_model]);
+
+        let u_concat = Tensor::cat(vec![z_prev, a], 1);
+        let u = self.fusion.forward(u_concat);
+
+        self.ssm.forward_step(u, &state)
+    }
+
+    pub fn save(&self, file_path: &str) -> crate::error::Result<()> {
+        tracing::debug!(path = %file_path, "Saving model weights");
+        let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
+        let path = std::path::Path::new(file_path);
+        recorder
+            .record(self.clone().into_record(), path.to_path_buf())
+            .map_err(|e| crate::error::ModelError::Serialization(e.to_string()))?;
+        tracing::info!(path = %file_path, "Model saved successfully");
+        Ok(())
+    }
+
+    pub fn load(self, file_path: &str, device: &B::Device) -> crate::error::Result<Self> {
+        tracing::debug!(path = %file_path, "Loading model weights");
+        let recorder = burn::record::BinFileRecorder::<burn::record::FullPrecisionSettings>::new();
+        let path = std::path::Path::new(file_path);
+        let record = recorder
+            .load(path.to_path_buf(), device)
+            .map_err(|e| crate::error::ModelError::Serialization(e.to_string()))?;
+        tracing::info!(path = %file_path, "Model loaded successfully");
+        Ok(self.load_record(record))
+    }
+
+    /// Compute training loss with prediction, reconstruction, stability, and curvature terms.
+    pub fn loss(&self, args: LatentLossArgs<B>) -> Tensor<B, 1> {
+        let [batch, seq_len, _] = args.z.dims();
+        let target_z = args.z.clone().detach().slice([0..batch, 1..seq_len]);
+        let pred_slice = args.pred_z.clone().slice([0..batch, 0..seq_len - 1]);
+
+        let mse_latent = (target_z - pred_slice).powf_scalar(2.0).mean();
+        let mse_recons = (args.original_x.clone() - args.reconstructed_x)
+            .powf_scalar(2.0)
+            .mean();
+        let target_x = args.original_x.detach().slice([0..batch, 1..seq_len]);
+        let pred_x_slice = args.predicted_x.slice([0..batch, 0..seq_len - 1]);
+        let mse_pred_x = (target_x - pred_x_slice).powf_scalar(2.0).mean();
+
+        let reg_loss = stability_loss(args.z.clone(), self.stability_projections.val());
+        let curv_loss = curvature_loss(args.z);
+
+        mse_latent
+            + mse_recons.mul_scalar(args.recon_weight)
+            + mse_pred_x.mul_scalar(args.recon_weight)
+            + reg_loss.mul_scalar(args.stability_weight)
+            + curv_loss.mul_scalar(args.curvature_weight)
+    }
 }
