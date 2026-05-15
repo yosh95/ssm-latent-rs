@@ -116,7 +116,7 @@ impl<B: Backend> MultiScaleSsmBlock<B> {
             // Override a_re with layer-specific initialization
             block.a_re = Param::from_tensor(Tensor::random(
                 [config.n_heads, config.d_state],
-                Distribution::Uniform(a_re_min as f64, a_re_max as f64),
+                Distribution::Uniform(a_re_min, a_re_max),
                 device,
             ));
 
@@ -147,8 +147,7 @@ impl<B: Backend> MultiScaleSsmBlock<B> {
             let normalized = norm.forward(out);
             let y = layer.forward(normalized);
             // Scale residual contribution to prevent activation explosion
-            out = (y.mul_scalar(num_layers_recip) + residual)
-                .clamp(-100.0, 100.0);
+            out = (y.mul_scalar(num_layers_recip) + residual).clamp(-100.0, 100.0);
         }
         out
     }
@@ -177,8 +176,7 @@ impl<B: Backend> MultiScaleSsmBlock<B> {
                     None
                 },
             );
-            out = (y.mul_scalar(num_layers_recip) + residual)
-                .clamp(-100.0, 100.0);
+            out = (y.mul_scalar(num_layers_recip) + residual).clamp(-100.0, 100.0);
             new_states.push((next_h, current_bx));
             new_conv_states.push(next_conv_state);
         }
@@ -208,6 +206,7 @@ pub struct MultiScaleState<B: Backend> {
 }
 
 impl<B: Backend> MultiScaleState<B> {
+    #[allow(clippy::too_many_arguments)]
     pub fn zeros(
         batch: usize,
         n_layers: usize,

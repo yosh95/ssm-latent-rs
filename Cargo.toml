@@ -45,6 +45,10 @@ ort = ["dep:ort"]
 name = "circle-world-demo"
 path = "circle-world-demo/src/main.rs"
 
+[[bin]]
+name = "circle-world-rtrl"
+path = "circle-world-demo/src/rtrl_main.rs"
+
 [[bench]]
 name = "training_step"
 harness = false

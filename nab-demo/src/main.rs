@@ -4,8 +4,8 @@ use burn::module::AutodiffModule;
 use burn::optim::AdamConfig;
 use burn::optim::Optimizer;
 use burn::tensor::{Tensor, TensorData};
+use chrono::{Datelike, NaiveDateTime, Timelike};
 use serde::Deserialize;
-use chrono::{NaiveDateTime, Timelike, Datelike};
 use ssm_latent_model::latent::{LatentLossArgs, MultiScaleLatentPredictor};
 use ssm_latent_model::ssm::{MultiScaleSsmConfig, MultiScaleState};
 use std::error::Error;
@@ -274,15 +274,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         let result_filename = format!("{}_{}", detector_name, filename);
         let final_result_path = result_dir.join(&result_filename);
 
-        println!(
-            "\n{}[Processing]{} {}/{}",
-            BOLD, RESET, category, filename
-        );
+        println!("\n{}[Processing]{} {}/{}", BOLD, RESET, category, filename);
 
         let raw_records = load_nab_records(&data_path)?;
         let raw_values: Vec<f32> = raw_records.iter().map(|r| r.value).collect();
-        let timestamps: Vec<String> =
-            raw_records.iter().map(|r| r.timestamp.clone()).collect();
+        let timestamps: Vec<String> = raw_records.iter().map(|r| r.timestamp.clone()).collect();
 
         let (normalized_values, _, _) = minmax_normalize(&raw_values);
         let seq_len = normalized_values.len();
@@ -303,12 +299,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut best_loss = f32::INFINITY;
         let mut no_improve_count = 0;
 
-        let mut model = MultiScaleLatentPredictor::<MyBackend>::new(
-            &config,
-            feature_dim,
-            feature_dim,
-            &device,
-        );
+        let mut model =
+            MultiScaleLatentPredictor::<MyBackend>::new(&config, feature_dim, feature_dim, &device);
         let mut optim = AdamConfig::new().init();
 
         // ─── Training ────────────────────────────────────────────────
@@ -356,14 +348,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         recon_weight: 5.0,
                     });
 
-                    let loss_val =
-                        loss.clone().into_data().as_slice::<f32>().unwrap()[0];
+                    let loss_val = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
                     if loss_val.is_finite() {
                         epoch_loss += loss_val;
                         n_updates += 1;
                         let grads = loss.backward();
-                        let grads_params =
-                            burn::optim::GradientsParams::from_grads(grads, &model);
+                        let grads_params = burn::optim::GradientsParams::from_grads(grads, &model);
                         model = optim.step(current_lr as f64, model, grads_params);
                     }
                 }
@@ -379,13 +369,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                     no_improve_count += 1;
                 }
                 if no_improve_count >= early_stop_patience {
-                    println!("  Early stop epoch {}/{}, best={:.6}", epoch, adaptive_epochs, best_loss);
+                    println!(
+                        "  Early stop epoch {}/{}, best={:.6}",
+                        epoch, adaptive_epochs, best_loss
+                    );
                     break;
                 }
             }
         } else {
-            let flat_features: Vec<f32> =
-                features[..total_train_count].iter().flatten().cloned().collect();
+            let flat_features: Vec<f32> = features[..total_train_count]
+                .iter()
+                .flatten()
+                .cloned()
+                .collect();
             let train_tensor = Tensor::<MyBackend, 3>::from_data(
                 TensorData::new(flat_features, [1, total_train_count, feature_dim]),
                 &device,
@@ -416,8 +412,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     recon_weight: 5.0,
                 });
 
-                let loss_val =
-                    loss.clone().into_data().as_slice::<f32>().unwrap()[0];
+                let loss_val = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
                 if !loss_val.is_finite() {
                     continue;
                 }
@@ -429,12 +424,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
 
                 let grads = loss.backward();
-                let grads_params =
-                    burn::optim::GradientsParams::from_grads(grads, &model);
+                let grads_params = burn::optim::GradientsParams::from_grads(grads, &model);
                 model = optim.step(current_lr as f64, model, grads_params);
 
                 if no_improve_count >= early_stop_patience {
-                    println!("  Early stop epoch {}/{}, best={:.6}", epoch, adaptive_epochs, best_loss);
+                    println!(
+                        "  Early stop epoch {}/{}, best={:.6}",
+                        epoch, adaptive_epochs, best_loss
+                    );
                     break;
                 }
             }
@@ -497,7 +494,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             recon_errors.push((recon_vals[0] - normalized_values[i]).powi(2));
 
             // Latent prediction error
-            let next_vec = if i + 1 < seq_len { &features[i + 1] } else { &features[i] };
+            let next_vec = if i + 1 < seq_len {
+                &features[i + 1]
+            } else {
+                &features[i]
+            };
             let z_next = Tensor::<InnerBackend, 2>::from_data(
                 TensorData::new(next_vec.clone(), [1, feature_dim]),
                 &device,
@@ -522,12 +523,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             latent_errors[i] = 0.0;
         }
 
-        let scores = compute_anomaly_scores(
-            &pred_errors,
-            &recon_errors,
-            &latent_errors,
-            probation_len,
-        );
+        let scores =
+            compute_anomaly_scores(&pred_errors, &recon_errors, &latent_errors, probation_len);
 
         std::fs::create_dir_all(&result_dir)?;
         let mut wtr = csv::Writer::from_path(&final_result_path)?;
