@@ -1,59 +1,70 @@
-# NAB Anomaly Detection Benchmark Report: SSM+Latent (Rust)
+# NAB Anomaly Detection Benchmark Report: Pure Mamba Predictor
 
-**Last updated**: 2026-05-14 (Phase 4 Multi-Scale Architecture Implementation)
+**Last updated**: 2026-05-16 (JEPA removed — Pure Mamba predictor)
 
-## 1. Architecture Changes (Phase 4)
+## 1. Architecture: Pure Mamba (No JEPA)
 
-### Multi-Scale SSM Stack (`MultiScaleSsmBlock`)
-従来の単層SSM → 3層スタックに進化：
+### Why This Rewrite
 
-| Layer | Timescale | `a_re` initialization | Purpose |
-|:---|:---|:---|:---|
-| **Layer 0 (Fast)** | 短周期 | [-1.0, -0.3] | 急激なスパイク・外れ値検知 |
-| **Layer 1 (Medium)** | 日周期 | [-0.3, -0.05] | 日次パターン・時間帯変動 |
-| **Layer 2 (Slow)** | 週周期+ | [-0.05, -0.005] | 週次/月次の季節性変化 |
+The previous JEPA-based approach had fundamental conflicts with anomaly detection:
 
-各層はresidual connection + RMSNormで接続され、異なる時定数の情報を同時に処理。
+| JEPA component | Why removed |
+|:---|:---|
+| Latent-space prediction | Anomalies become "predictable" in latent space — error signal vanishes |
+| VICReg stability loss | Forces all representations (normal + anomalous) into same distribution |
+| Curvature loss | Penalizes the very "trajectory bends" that constitute anomalies |
+| Reconstruction loss | Distracts model from prediction quality; anomalies still reconstructable |
+| Encoder/Decoder | Unnecessary indirection; ~10K wasted params |
+| MultiScaleSsmBlock | 280K params on 1K-20K point series = extreme overfitting |
+| 75% train ratio | Anomaly windows leak into training data |
+
+### New Architecture
+
+```
+Observation[8D] → Linear(input_proj) → SsmBlock(1層) → Linear(output_proj) → Prediction[8D]
+```
+
+- **Single SSM block** with complex rotation (`d_model=32, d_state=8, expand=2, heads=2`)
+- **~9K parameters** (vs ~280K previously) — appropriate for 1K–20K point series
+- **Pure MSE loss**: `(pred[t] - target[t+1])²`
+- **Direct observation space prediction** — no latent space, no encoder/decoder
+- **Training on first 15% only** — anomaly windows never seen during training
+- **Streaming inference** — `forward_step()` with persistent hidden state
 
 ### Feature Engineering
-入力次元: 7D → **11D** に拡張
-- `[value, z_short, z_long, diff, diff_long, hour_sin, hour_cos, dow_sin, dow_cos, rolling_mean, rolling_std]`
-- 短期(48step) + 長期(336step) の2重ローリング統計
-- MAD-based robust normalization
 
-### Training Improvements
-- Warmup + Cosine Decay の学習率スケジュール
-- MultiScaleLatentPredictor (Burn Module derive でクリーンな実装)
-- Early stopping + 適応エポック数
+8D input: `[value, diff, z_short, z_long, hour_sin, hour_cos, dow_sin, dow_cos]`
 
-### Scoring Engine (Multi-Horizon)
-5つの誤差信号を統合:
-| Signal | Weight | Purpose |
-|:---|:---:|:---|
-| 1-step prediction error | 0.35 | 急峻な異常 |
-| 5-step deviation | 0.25 | 日次パターン逸脱 |
-| 10-step deviation | 0.15 | 長周期トレンド変化 |
-| Reconstruction error | 0.15 | オートエンコーダ品質 |
-| Latent space error | 0.10 | 構造的変化 |
+| Feature | Description |
+|:---|:---|
+| `value` | MAD-normalized original value |
+| `diff` | First difference |
+| `z_short` | Rolling z-score (48-step window) |
+| `z_long` | Rolling z-score (336-step window = ~1 week at 5min) |
+| `hour_sin/cos` | Hour-of-day cyclic encoding |
+| `dow_sin/cos` | Day-of-week cyclic encoding |
 
-Adaptive power transform: z-scoreの歪度に応じてpercentileのpowerを調整（0.15〜0.50）
+### Scoring Pipeline
 
-## 2. Expected Improvements
+```
+1. Streaming inference → weighted prediction error
+2. MAD calibration on probationary period
+3. Contamination-guarded EWMA z-score normalization (guard_z=3.5)
+4. Percentile rank + power transform (0.25) → anomaly score ∈ [0, 1]
+```
 
-| Component | Phase 3 (前回) | Phase 4 (今回) |
-|:---|:---|:---|
-| SSM layers | 1 (d_model=64) | 3 (d_model=128) |
-| Feature dims | 7 | 11 |
-| Rolling windows | 1 (48 steps) | 2 (48 + 336 steps) |
-| Normalization | Min-max | MAD robust |
-| LR schedule | Cosine oscillation | Warmup + Cosine decay |
-| Scoring signals | 3 | 5 (multi-horizon) |
-| Power transform | Fixed (0.3) | Adaptive (skew-based) |
+### Key Design Decisions
 
-## 3. Running
+1. **Small model, normal-only training**: Prevents "learn to ignore anomalies" behavior
+2. **MAD normalization**: Robust to outlier contamination in raw values
+3. **Dual-horizon z-scores**: Captures both spike anomalies (short) and trend shifts (long)
+4. **Contamination guard (z < 3.5)**: Prevents anomalies from corrupting EWMA baseline
+5. **Power 0.25 transform**: Sharper contrast at high end for NAB threshold optimizer
+
+## 2. Running
 
 ```bash
-# Generate anomaly scores (requires NAB data in nab-demo/data/)
+# Generate anomaly scores
 cargo run -p nab-demo --features "ssm-latent-model/wgpu,ssm-latent-model/ndarray,ssm-latent-model/train"
 
 # Evaluate with NAB scoring pipeline

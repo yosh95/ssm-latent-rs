@@ -1052,9 +1052,7 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "rand 0.10.1",
- "serde",
  "ssm-latent-model",
- "toml 0.8.23",
 ]
 
 [[package]]

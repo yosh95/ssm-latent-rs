@@ -8,12 +8,12 @@ help:
 
 # ─── 🎮 Demos (Native, GPU default) ──────────────────────────────
 
-# BP Baseline: SSM + JEPA with full backprop (circle world)
-bp:
+# Circle Baseline: SSM + JEPA with full backprop (circle world)
+circle:
     cargo run -p circle-world-demo --release
 
-# BP Baseline (CPU fallback)
-bp-cpu:
+# Circle Baseline (CPU fallback)
+circle-cpu:
     cargo run -p circle-world-demo --release --no-default-features --features ndarray
 
 # Log anomaly detection demo (MAD + EWMA hybrid threshold)

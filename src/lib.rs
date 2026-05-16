@@ -20,5 +20,6 @@
 pub mod error;
 pub mod latent;
 pub mod multimodal;
+pub mod predictor;
 pub mod preprocess;
 pub mod ssm;

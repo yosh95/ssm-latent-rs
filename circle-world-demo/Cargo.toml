@@ -8,8 +8,6 @@ default-run = "circle-world-demo"
 ssm-latent-model = { path = "..", features = ["train"] }
 burn = { version = "0.21", default-features = false, features = ["std", "autodiff", "train"] }
 rand = { version = "0.10", default-features = false }
-serde = { version = "1.0", default-features = false, features = ["derive"] }
-toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 
 [features]
 default = ["wgpu"]
