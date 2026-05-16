@@ -18,8 +18,6 @@
 //! - **Cross-platform**: CPU (NdArray), GPU (WGPU), and WASM backends via Burn
 
 pub mod error;
-pub mod ff_model;
-pub mod forward_forward;
 pub mod latent;
 pub mod multimodal;
 pub mod preprocess;

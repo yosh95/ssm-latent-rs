@@ -16,14 +16,6 @@ bp:
 bp-cpu:
     cargo run -p circle-world-demo --release --no-default-features --features ndarray
 
-# Forward-Forward: encoder/decoder only, no SSM, no BP (circle world)
-ff:
-    cargo run -p circle-world-demo --release --bin circle-world-ff
-
-# Forward-Forward (CPU fallback)
-ff-cpu:
-    cargo run -p circle-world-demo --release --bin circle-world-ff --no-default-features --features ndarray
-
 # Log anomaly detection demo (MAD + EWMA hybrid threshold)
 log-anomaly:
     cargo run -p log-anomaly-demo --release

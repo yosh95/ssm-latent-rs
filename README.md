@@ -107,7 +107,6 @@ cargo test --test extended_tests      # Edge cases, MIMO rank > 1, step(), visio
 
 ## 📚 References
 
-- Hinton, G. (2022). **The Forward-Forward Algorithm: Some Preliminary Investigations**. arXiv:2212.13345.
 - Lahoti, A., et al. (2026). **Mamba-3: Improved Sequence Modeling using State Space Principles**.
 - Maes, L., et al. (2026). **LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels**.
 - Wang, Y., Bounou, O., Zhou, G., Balestriero, R., Rudner, T.G., LeCun, Y., & Ren, M. (2026). **Temporal Straightening for Latent Planning**.

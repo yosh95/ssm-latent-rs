@@ -20,6 +20,4 @@ ndarray = ["burn/ndarray", "ssm-latent-model/ndarray"]
 name = "circle-world-demo"
 path = "src/main.rs"
 
-[[bin]]
-name = "circle-world-ff"
-path = "src/ff_main.rs"
+
