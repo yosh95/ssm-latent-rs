@@ -8,21 +8,13 @@ help:
 
 # ─── 🎮 Demos (Native, GPU default) ──────────────────────────────
 
-# RTRL: Zero-BPTT SSM + Forward-Forward world model (circle world)
-rtrl:
-    cargo run -p circle-world-demo --release
-
-# RTRL (CPU fallback)
-rtrl-cpu:
-    cargo run -p circle-world-demo --release --no-default-features --features ndarray
-
 # BP Baseline: SSM + JEPA with full backprop (circle world)
 bp:
-    cargo run -p circle-world-demo --release --bin circle-world-demo
+    cargo run -p circle-world-demo --release
 
 # BP Baseline (CPU fallback)
 bp-cpu:
-    cargo run -p circle-world-demo --release --bin circle-world-demo --no-default-features --features ndarray
+    cargo run -p circle-world-demo --release --no-default-features --features ndarray
 
 # Forward-Forward: encoder/decoder only, no SSM, no BP (circle world)
 ff:

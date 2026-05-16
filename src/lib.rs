@@ -23,6 +23,4 @@ pub mod forward_forward;
 pub mod latent;
 pub mod multimodal;
 pub mod preprocess;
-pub mod rtrl;
-pub mod rtrl_world;
 pub mod ssm;
