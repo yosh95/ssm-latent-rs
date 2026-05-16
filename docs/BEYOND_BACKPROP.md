@@ -178,31 +178,33 @@ src/
 ├── latent.rs                 # Original JEPA predictor (BP), stability/curvature loss
 ├── forward_forward.rs        # L2 normalisation, goodness, FF loss functions
 ├── ff_model.rs               # FfLayer, FfEncoder (stackable FF layers)
-├── ff_hybrid.rs              # FfSsmWorldModel (FF enc/dec + BP SSM) — failed hybrid
 ├── rtrl.rs                   # ssm_step_detached, RtrlAccumulator
 └── rtrl_world.rs             # RtrlWorldModel (reusable: FF enc + RTRL SSM + FF dec)
 
 circle-world-demo/src/
 ├── main.rs                   # Original BP demo (SSM+JEPA, full BPTT)
 ├── ff_main.rs                # FF autoencoder only (static, no dynamics)
-├── ff_hybrid_main.rs         # FF-SSM hybrid demo (failed)
 └── rtrl_main.rs              # RTRL demo v1 (zero BPTT) — BEST RESULT
 ```
 
 ### 6.1 Running the Demos
 
 ```bash
-# Original BP (baseline)
-cargo run -p ssm-latent-model --release --bin circle-world-demo \
-  --features ndarray,autodiff --no-default-features
+# All demos now default to GPU (Wgpu). Add --no-default-features --features ndarray for CPU.
 
-# FF autoencoder only
-cargo run -p ssm-latent-model --release --bin circle-world-ff \
-  --features ndarray,autodiff --no-default-features
+# Original BP (baseline) — GPU by default
+cargo run -p circle-world-demo --release
 
-# RTRL (zero BPTT, best result)
-cargo run -p ssm-latent-model --release --bin circle-world-rtrl \
-  --features ndarray,autodiff --no-default-features
+# FF autoencoder only — GPU by default
+cargo run -p circle-world-demo --release --bin circle-world-ff
+
+# RTRL (zero BPTT, best result) — GPU by default
+cargo run -p circle-world-demo --release --bin circle-world-rtrl
+
+# CPU-only variants:
+cargo run -p circle-world-demo --release --no-default-features --features ndarray
+cargo run -p circle-world-demo --release --bin circle-world-ff --no-default-features --features ndarray
+cargo run -p circle-world-demo --release --bin circle-world-rtrl --no-default-features --features ndarray
 ```
 
 ### 6.2 Using RtrlWorldModel in Other Demos

@@ -13,6 +13,7 @@ members = [
 name = "ssm-latent-model"
 version = "0.1.0"
 edition = "2024"
+default-run = "ssm-latent-model"
 
 [lib]
 path = "src/lib.rs"
@@ -40,14 +41,6 @@ autodiff = ["burn/autodiff"]
 wgpu = ["burn/wgpu"]
 train = ["burn/train"]
 ort = ["dep:ort"]
-
-[[bin]]
-name = "circle-world-demo"
-path = "circle-world-demo/src/main.rs"
-
-[[bin]]
-name = "circle-world-rtrl"
-path = "circle-world-demo/src/rtrl_main.rs"
 
 [[bench]]
 name = "training_step"

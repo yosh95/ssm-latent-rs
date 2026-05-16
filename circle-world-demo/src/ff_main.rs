@@ -149,14 +149,36 @@ fn main() {
 
     let mut rng = StdRng::seed_from_u64(42);
 
+    let backend_name = {
+        #[cfg(feature = "wgpu")]
+        {
+            "Wgpu (GPU)"
+        }
+        #[cfg(all(not(feature = "wgpu"), feature = "ndarray"))]
+        {
+            "NdArray (CPU)"
+        }
+        #[cfg(all(not(feature = "wgpu"), not(feature = "ndarray")))]
+        {
+            "NdArray (CPU)"
+        }
+    };
+
     println!("==========================================================");
     println!("    🔮 Circle World — Forward-Forward Algorithm");
     println!("    (Backprop-free: each layer trains independently)");
+    println!("    Backend: {}", backend_name);
     println!("==========================================================");
     println!();
     println!("Architecture:");
-    println!("  Encoder:   2 → 16 → {} (Forward-Forward, layers independent)", latent_dim);
-    println!("  Decoder:   {} → 2       (Local MSE, detached input)", latent_dim);
+    println!(
+        "  Encoder:   2 → 16 → {} (Forward-Forward, layers independent)",
+        latent_dim
+    );
+    println!(
+        "  Decoder:   {} → 2       (Local MSE, detached input)",
+        latent_dim
+    );
     println!();
     println!("Key difference from original:");
     println!("  - Each encoder layer has its OWN loss (FF goodness)");
@@ -188,12 +210,7 @@ fn main() {
 
     println!("\n[Part 2: Forward-Forward Training]");
     let model_valid = model.valid();
-    run_inference(
-        &model_valid,
-        &device,
-        "Epoch 0 (Untrained)",
-        latent_dim,
-    );
+    run_inference(&model_valid, &device, "Epoch 0 (Untrained)", latent_dim);
     std::thread::sleep(std::time::Duration::from_millis(1200));
 
     // --- Training Loop ---
@@ -257,30 +274,31 @@ fn main() {
         let enc_out = model.encoder.encode(original_input.clone());
         let decoded = model.decode(enc_out.detach());
         // Target: the original 2D input (autoencoder reconstruction)
-        let recon_loss = (decoded - original_input).powf_scalar(2.0).mean().unsqueeze();
+        let recon_loss = (decoded - original_input)
+            .powf_scalar(2.0)
+            .mean()
+            .unsqueeze();
 
         // ─── Combine losses ───
         // Each FF layer loss is summed with the reconstruction loss.
         // Since layers are isolated via detach, the combined backward
         // updates each layer independently.
-        let total_loss = ff_losses
-            .into_iter()
-            .fold(recon_loss, |acc, l| acc + l);
+        let total_loss = ff_losses.into_iter().fold(recon_loss, |acc, l| acc + l);
 
         let current_loss: f32 = total_loss.clone().into_data().as_slice::<f32>().unwrap()[0];
 
         if epoch % 30 == 0 || epoch == 1 {
             // Also compute validation stats
             let model_valid = model.valid();
-            let val_enc = model_valid.encode(
-                Tensor::<MyBackend, 2>::from_data(
-                    burn::tensor::TensorData::new(
-                        vec![1.0f32, 0.0f32, 0.0f32, 1.0f32, -1.0f32, 0.0f32, 0.0f32, -1.0f32],
-                        [4, 2],
-                    ),
-                    &device,
+            let val_enc = model_valid.encode(Tensor::<MyBackend, 2>::from_data(
+                burn::tensor::TensorData::new(
+                    vec![
+                        1.0f32, 0.0f32, 0.0f32, 1.0f32, -1.0f32, 0.0f32, 0.0f32, -1.0f32,
+                    ],
+                    [4, 2],
                 ),
-            );
+                &device,
+            ));
 
             println!(
                 "Epoch {:4}: FF Loss = {:.6} | Latent state (4 points): {:.3?}",

@@ -170,9 +170,26 @@ fn main() {
 
     let mut rng = StdRng::seed_from_u64(42);
 
+    let backend_name = {
+        #[cfg(feature = "wgpu")]
+        {
+            "Wgpu (GPU)"
+        }
+        #[cfg(all(not(feature = "wgpu"), feature = "ndarray"))]
+        {
+            "NdArray (CPU)"
+        }
+        #[cfg(all(not(feature = "wgpu"), not(feature = "ndarray")))]
+        {
+            "NdArray (CPU)"
+        }
+    };
+
     println!("===================================================================");
     println!("  🔮 Circle World — Full RTRL (Zero BPTT + Forward-Forward)");
     println!("===================================================================");
+    println!();
+    println!("  Backend: {}", backend_name);
     println!();
     println!("Architecture:");
     println!("  Encoder:  2 → 16 → 64  (Forward-Forward, per-layer goodness)");

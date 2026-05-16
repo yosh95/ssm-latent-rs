@@ -114,9 +114,25 @@ fn main() {
     let device = burn::backend::ndarray::NdArrayDevice::default();
     let mut rng = StdRng::seed_from_u64(42);
 
+    let backend_name = {
+        #[cfg(feature = "wgpu")]
+        {
+            "Wgpu (GPU)"
+        }
+        #[cfg(all(not(feature = "wgpu"), feature = "ndarray"))]
+        {
+            "NdArray (CPU)"
+        }
+        #[cfg(all(not(feature = "wgpu"), not(feature = "ndarray")))]
+        {
+            "NdArray (CPU)"
+        }
+    };
+
     println!("==========================================================");
     println!("     📖 The Chronicles of the Digital Explorer");
     println!("     (Loaded config from config.toml)");
+    println!("     Backend: {}", backend_name);
     println!("==========================================================");
     sleep(Duration::from_millis(800));
 

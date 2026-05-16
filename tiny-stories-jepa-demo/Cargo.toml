@@ -2,6 +2,7 @@
 name = "tiny-stories-jepa-demo"
 version = "0.1.0"
 edition = "2021"
+default-run = "tiny-stories-jepa-demo"
 
 [dependencies]
 burn = { version = "0.21", default-features = false, features = ["train", "wgpu"] }
