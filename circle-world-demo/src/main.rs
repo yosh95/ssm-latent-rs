@@ -128,7 +128,7 @@ fn main() {
     let learning_rate = 1e-3;
 
     // JEPA loss weights
-    let recon_weight = 1.0;     // reconstruction weight (encoder quality)
+    let recon_weight = 1.0; // reconstruction weight (encoder quality)
     let stability_weight = 0.01; // VICReg — prevents latent collapse
     let curvature_weight = 0.005; // Temporal Straightening — smooth trajectories
 
@@ -139,8 +139,11 @@ fn main() {
 
     println!(
         "Config: d_model={}, d_state={}, expand={}, heads={}, layers={}",
-        ssm_config.d_model, ssm_config.d_state, ssm_config.expand,
-        ssm_config.n_heads, ssm_config.n_layers,
+        ssm_config.d_model,
+        ssm_config.d_state,
+        ssm_config.expand,
+        ssm_config.n_heads,
+        ssm_config.n_layers,
     );
     println!(
         "JEPA: recon_w={}, stability_w={}, curvature_w={}",
@@ -153,8 +156,8 @@ fn main() {
         action_dim,
         &device,
     );
-    let mut brain_optimizer = AdamConfig::new()
-        .init::<MyAutodiffBackend, MultiScaleLatentPredictor<MyAutodiffBackend>>();
+    let mut brain_optimizer =
+        AdamConfig::new().init::<MyAutodiffBackend, MultiScaleLatentPredictor<MyAutodiffBackend>>();
 
     // --- Part 2: Dreaming ---
     println!("\n[Part 2: Dreaming]");
@@ -285,10 +288,7 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         let real_y = angle.sin();
 
         let action = Tensor::<B, 2>::from_data(
-            burn::tensor::TensorData::new(
-                vec![-0.1 * angle.sin(), 0.1 * angle.cos()],
-                [1, 2],
-            ),
+            burn::tensor::TensorData::new(vec![-0.1 * angle.sin(), 0.1 * angle.cos()], [1, 2]),
             device,
         );
 

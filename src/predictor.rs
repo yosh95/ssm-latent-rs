@@ -453,13 +453,19 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
                 return true;
             }
             let period = (1.0 / h_sampling_prob).round() as usize;
-            t % period == 0
+            t.is_multiple_of(period)
         };
 
         for t in 0..seq_len {
             let obs_dim = observations.dims()[2];
-            let obs_t = observations.clone().slice([0..batch, t..t + 1]).reshape([batch, obs_dim]);
-            let act_t = actions.clone().slice([0..batch, t..t + 1]).reshape([batch, actions.dims()[2]]);
+            let obs_t = observations
+                .clone()
+                .slice([0..batch, t..t + 1])
+                .reshape([batch, obs_dim]);
+            let act_t = actions
+                .clone()
+                .slice([0..batch, t..t + 1])
+                .reshape([batch, actions.dims()[2]]);
 
             let obs_enc = self.obs_proj.forward(obs_t); // [batch, d_model]
 

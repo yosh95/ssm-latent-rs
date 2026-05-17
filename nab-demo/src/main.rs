@@ -341,19 +341,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             .filter(|p| {
                 let relative = p.strip_prefix(base_data_path).unwrap_or(p);
                 let s = relative.to_str().unwrap_or("");
-                cfg.datasets.quick.iter().any(|q| s.ends_with(q) || s == q.as_str())
+                cfg.datasets
+                    .quick
+                    .iter()
+                    .any(|q| s.ends_with(q) || s == q.as_str())
             })
             .collect()
     } else {
         all_csv_files
     };
 
-    println!(
-        "{}Datasets to process: {}{}",
-        CYAN,
-        csv_files.len(),
-        RESET
-    );
+    println!("{}Datasets to process: {}{}", CYAN, csv_files.len(), RESET);
     for f in &csv_files {
         let relative = f.strip_prefix(base_data_path).unwrap_or(f);
         println!("  - {}", relative.display());
@@ -406,7 +404,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     println!(
         "{}Train: lr={}, epochs={}, probation={:.0}%, patience={}{}",
-        CYAN, learning_rate, max_epochs, probation_ratio * 100.0, early_stop_patience, RESET
+        CYAN,
+        learning_rate,
+        max_epochs,
+        probation_ratio * 100.0,
+        early_stop_patience,
+        RESET
     );
 
     // ── Process each dataset ──
@@ -432,10 +435,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             continue;
         }
 
-        println!(
-            "\n{}[Processing]{} {}/{}",
-            BOLD, RESET, category, filename
-        );
+        println!("\n{}[Processing]{} {}/{}", BOLD, RESET, category, filename);
 
         // ── Load & normalize ──
         let raw_records = load_nab_records(data_path)?;
@@ -462,10 +462,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             &device,
         );
         // Dummy zero actions for JEPA
-        let zero_actions = Tensor::<MyBackend, 3>::zeros(
-            [1, train_len_aligned, action_dim],
-            &device,
-        );
+        let zero_actions =
+            Tensor::<MyBackend, 3>::zeros([1, train_len_aligned, action_dim], &device);
 
         let mut model = MultiScaleLatentPredictor::<MyBackend>::new(
             &ssm_config,
@@ -510,9 +508,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             model = optim.step(learning_rate, model, grads_params);
 
             if no_improve >= early_stop_patience {
-                println!(
-                    "  Early stop @ epoch {epoch}, best_loss={best_loss:.6}"
-                );
+                println!("  Early stop @ epoch {epoch}, best_loss={best_loss:.6}");
                 break;
             }
         }
@@ -609,7 +605,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         // ── Write results ──
         std::fs::create_dir_all(&result_dir)?;
         let mut wtr = csv::Writer::from_path(&final_result_path)?;
-        wtr.write_record(["timestamp", "value", "anomaly_score", "recon_err_raw", "latent_pred_err_raw", "obs_pred_err_raw"])?;
+        wtr.write_record([
+            "timestamp",
+            "value",
+            "anomaly_score",
+            "recon_err_raw",
+            "latent_pred_err_raw",
+            "obs_pred_err_raw",
+        ])?;
         for i in 0..raw_records.len() {
             wtr.write_record([
                 &raw_records[i].timestamp,
