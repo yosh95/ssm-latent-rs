@@ -1,16 +1,16 @@
 {
-  "ssm_latent_multiscale": {
+  "ssm_latent_jepa": {
     "standard": {
-      "threshold": 0.99956393,
-      "score": -39.27158716765055
+      "threshold": 42.097027,
+      "score": 1.682678118795662
     },
     "reward_low_FP_rate": {
-      "threshold": 0.9997599,
-      "score": -73.73410168114565
+      "threshold": 42.097027,
+      "score": -0.771093455803147
     },
     "reward_low_FN_rate": {
-      "threshold": 0.9991552,
-      "score": -86.37913638482247
+      "threshold": 42.097027,
+      "score": 0.6826781187956621
     }
   }
 }

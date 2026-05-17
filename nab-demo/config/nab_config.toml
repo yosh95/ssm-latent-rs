@@ -1,0 +1,53 @@
+# NAB Anomaly Detection — JEPA Configuration
+# 
+# mode: "quick" = 4 representative datasets for fast iteration
+#       "full"  = all datasets for final evaluation
+
+[mode]
+current = "full"
+
+[model]
+d_model = 24
+d_state = 8
+expand = 2
+n_heads = 2
+mimo_rank = 1
+n_layers = 3
+use_conv = true
+conv_kernel = 4
+
+[train]
+learning_rate = 5e-4
+max_epochs = 80
+probation_ratio = 0.15
+early_stop_patience = 20
+
+# JEPA loss weights — tuned for anomaly detection
+[loss]
+stability_weight = 0.001    # minimal VICReg, just enough to prevent collapse
+curvature_weight = 0.0      # CRITICAL: zero — do NOT penalize trajectory bends (anomalies ARE bends)
+recon_weight = 1.0          # reconstruction quality
+
+# Anomaly score composition
+# score = α·recon_err + β·latent_pred_err + γ·obs_pred_err
+[scoring]
+alpha_recon = 1.0           # "is this point on the normal manifold?"
+beta_latent = 0.5           # "is this transition normal in latent space?"
+gamma_obs = 0.5             # "is this transition normal in observation space?"
+
+# Anomaly score calibration
+[calibration]
+k_mad = 3.8
+alpha_ewma = 0.1
+k_ewma = 3.8
+guard_z = 3.5
+power = 0.5               # percentile power: 0.5 = sqrt (wider spread), 0.25 = sharp (narrow)
+
+# Datasets for quick mode (one from each category)
+[datasets]
+quick = [
+    "realKnownCause/ambient_temperature_system_failure.csv",
+    "realAWSCloudwatch/ec2_cpu_utilization_5f5533.csv",
+    "artificialWithAnomaly/art_daily_jumpsdown.csv",
+    "realTraffic/occupancy_t4013.csv",
+]

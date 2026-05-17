@@ -3764,6 +3764,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ssm-latent-model",
+ "toml 0.8.23",
 ]
 
 [[package]]

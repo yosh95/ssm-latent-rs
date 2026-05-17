@@ -1,91 +1,147 @@
-# NAB Anomaly Detection — 分析レポート（JEPA撤廃・Pure Mamba版）
+# NAB Anomaly Detection — 分析レポート（JEPA復活版）
 
-**最終更新日**: 2026-05-16
-**変更**: JEPA（潜在空間予測 + VICReg + 曲率損失 + reconstruction）を完全撤廃し、純粋な Mamba 時系列予測器に置換
-
----
-
-## 1. 変更の根拠
-
-### JEPA が異常検知と相反していた本質的理由
-
-| JEPA 機構 | 異常検知にとってなぜ有害か |
-|:---|:---|
-| **潜在空間予測** | 「異常も潜在空間では予測可能」に学習が収束 → 異常スコアが上がらない |
-| **VICReg 安定性損失** | 「全表現を標準正規分布に押し込め」＝異常の異質性を消去 |
-| **曲率損失（Temporal Straightening）** | 「軌道の曲がり」を罰する → 異常はまさに「曲がり」なのに抑制される |
-| **再構成損失** | 予測品質と無関係な補助タスク。異常も再構成できる |
-| **Encoder/Decoder** | 不要なパラメータ（~12K）。予測誤差に直接的寄与なし |
-| **MultiScaleSsmBlock (3層, 280K params)** | 1K〜20K点の1次元時系列に極度のオーバーパラメータ化 |
-| **75% 訓練比率** | 異常区間が訓練データに混入し、「異常をゲートで無視する」戦略を学習 |
+**最終更新日**: 2026-05-17
+**変更**: Pure Mamba から JEPA（MultiScaleLatentPredictor）に回帰。異常検知に適した損失重みで再構成。
 
 ---
 
-## 2. 新アーキテクチャ
+## 1. JEPA 復活の根拠
 
-```
-Observation[8D] → Linear(input_proj) → SsmBlock(1層) → Linear(output_proj) → Prediction[8D]
-```
+### 先行アプローチ（Pure Mamba）の構造的限界
 
-| 項目 | 旧 (JEPA+MultiScale) | 新 (Pure Mamba) |
-|:---|:---|:---|
-| モデル構造 | Encoder→MultiScaleSSM→Decoder + JEPA損失 | input_proj→SsmBlock→output_proj |
-| パラメータ数 | ~280K | **~9K** |
-| 損失関数 | MSE_latent + recon + VICReg + curvature (4項) | **MSE(pred[t], target[t+1]) のみ** |
-| 訓練範囲 | 全系列の75% | **先頭15%のみ**（正常データ） |
-| 正規化 | Min-Max | **MAD robust** |
-| 特徴量 | 7D | **8D**（短期z+長期zの二重窓） |
-| 推論 | forward_step（状態連続） | 同様（forward_step） |
+Pure Mamba 版（ANALYSIS_REPORT 2026-05-16）は 1-step 予測誤差のみを異常シグナルとしていた。
+しかし NAB の異常パターンには以下が含まれ、**1-step 予測誤差では原理的に検出できない**ものがある：
 
-### 特徴量設計 (8D)
-
-| Index | 特徴 | 目的 |
-|:---|:---|:---|
-| 0 | MAD正規化値 | 元系列の値をロバストに表現 |
-| 1 | 1階差分 | スパイク検知 |
-| 2 | 短期z-score (48step) | 局所的な異常値検知 |
-| 3 | 長期z-score (336step) | 週次トレンドからの逸脱検知 |
-| 4-5 | 時刻 sin/cos | 日周期パターン |
-| 6-7 | 曜日 sin/cos | 週周期パターン |
-
----
-
-## 3. スコアリングパイプライン
-
-```
-予測誤差（加重MSE: value 1.0, diff 0.3, z_short 0.2, z_long 0.2）
-  → MAD キャリブレーション（試用期間）
-  → 汚染ガード付き EWMA z-score（guard_z=3.5, α=0.05）
-  → パーセンタイル順位 + power 0.25 変換
-  → 異常スコア ∈ [0, 1]
-```
-
-### 設計上の要点
-
-1. **小モデル＋正常データのみ訓練**: 「異常を無視するゲート」の学習を防止
-2. **MAD 正規化**: 異常値に引きずられないロバストな中心化/スケーリング
-3. **二重窓 z-score**: スパイク異常（短期）とトレンドシフト（長期）の両方を捕捉
-4. **汚染ガード (z < 3.5)**: 異常が EWMA ベースラインを汚染しない
-5. **power 0.25**: NAB の閾値最適化が有効に働くよう、スコア上位を鋭く分布させる
-
----
-
-## 4. SOTA との残存差の見立て
-
-ARTime (SOTA: Standard=57.66) との差は主に以下に由来すると推定:
-
-| 要因 | ARTime | Pure Mamba | 対策 |
+| 異常タイプ | 1-step 誤差 | 長期予測誤差 | 再構成誤差 |
 |:---|:---|:---|:---|
-| 予測モデル | アンサンブル ARIMA | 単一 SSM | 複数シードアンサンブル可能 |
-| 異常モデル | 予測誤差の確率分布（ガウス仮定） | EWMA z-score | 近い設計だが精緻化余地あり |
-| 変化点検出 | 明示的 | 暗黙的（SSM内部） | 追加検討 |
-| パラメータ数 | 数十 | ~9K | 十分小さい ✓ |
-| 訓練データ | 正常期間のみ | 15% 正常期間 | ✓ |
+| スパイク異常 | ✅ 大 | ✅ 大 | ✅ 大（正常 manifold から外れる） |
+| レベルシフト | ❌ 小（shift 後は平坦） | ✅ 大（旧レベルに留まる） | ❌ 小（正常パターンの一部に見える） |
+| トレンド変化 | ❌ ほぼゼロ | ✅ 徐々に拡大 | ❌ 小 |
+| 周期性崩壊 | ❌ ほぼゼロ | ✅ 周期ズレが蓄積 | ✅ 中（周期構造の崩れ） |
+| 構造的異常 | ❌ 小 | ✅ 大 | ✅ **大（正常 manifold 外）** |
+
+JEPA の encoder/decoder が提供する**再構成誤差**は、1-step 予測誤差と**直交するシグナル**であり、
+特に「構造的異常」（正常の manifold に乗っていないデータ点）の検出に不可欠。
+
+### Circle デモで実証された JEPA の長期推論安定性
+
+Circle World デモでは、JEPA の潜在空間閉ループ推論が 20 ステップ以上にわたって
+ドリフトなしで円軌道を維持できることを実証した。同じタスクを Pure Mamba で行うと
+数ステップでドリフトし、円から外れる。
+
+この「長期閉ループ予測の安定性」は、NAB での**マルチホライズン予測誤差**による
+異常検出の前提条件である。
 
 ---
 
-## 5. 次の一手
+## 2. 新アーキテクチャ（JEPA + Multi-Scale SSM）
 
-1. **アンサンブル**: 3〜5 シードの MambaPredictor を訓練し、予測誤差の中央値/最大値を異常スコアに
-2. **複数 horizon 誤差**: 1-step だけでなく 5-step, 10-step 先の予測誤差も合成
-3. **a_re 減衰率の調整**: `SsmConfig` のデフォルト (-1.0, -0.1) を (-0.5, -0.05) に緩和し長期記憶を強化
+```
+Observation[8D] → Encoder → z[24D]
+                   ↓
+              Decoder → Recon_x[8D]    ← 再構成誤差シグナル（構造的異常）
+                   ↓
+z[24D] + zero_action[1D] → Fusion → u[24D]
+                   ↓
+          MultiScaleSsmBlock(3層)
+            fast / medium / slow
+                   ↓
+              z_pred[24D]              ← 潜在予測誤差シグナル（時間的異常）
+                   ↓
+              Decoder → Pred_x[8D]     ← 観測予測誤差シグナル
+```
+
+| 項目 | 旧 (Pure Mamba) | 新 (JEPA復活) |
+|:---|:---|:---|
+| モデル | MultiScaleMambaPredictor | **MultiScaleLatentPredictor** |
+| パラメータ | ~45K | ~25K (d_model=24) |
+| 損失 | MSE(pred[t], target[t+1]) のみ | latent MSE + recon MSE + minimal VICReg |
+| curvature weight | N/A | **0.0**（異常の曲がりを罰しない） |
+| stability weight | N/A | **0.001**（崩壊防止の最小限） |
+| 異常スコア | 1-step 予測誤差のみ | **再構成誤差 + 潜在予測誤差 + 観測予測誤差** |
+| 訓練範囲 | 先頭15% | 先頭15%（継承） |
+| 正規化 | MAD robust | MAD robust（継承） |
+| 特徴量 | 8D（継承） | 8D（継承） |
+| キャリブレーション | MAD + EWMA + power 0.25 | 同（継承） |
+
+---
+
+## 3. 損失関数
+
+```
+L = MSE_latent(z_pred[t], z[t+1])                          ← 潜在空間での予測（core JEPA）
+  + recon_w · (MSE(recon_x[t], x[t]) + MSE(pred_x[t], x[t+1]))  ← 再構成品質
+  + stability_w · VICReg(z[t])                              ← 潜在崩壊防止（最小限）
+  + curvature_w · Σ|z_t - 2z_{t-1} + z_{t-2}|²            ← ★ 0.0（異常検知では無効化）
+```
+
+### 重要な設計判断：curvature_weight = 0.0
+
+Temporal Straightening（曲率損失）は、Circle デモのような**予測タスク**では軌道を滑らかにする効果があるが、
+**異常検知では「軌道の曲がり」こそが検出すべき異常シグナルである**。したがって完全に無効化する。
+
+### 重要な設計判断：stability_weight = 0.001
+
+VICReg を完全にゼロにすると、JEPA の非対照学習において潜在表現が定数に崩壊するリスクがある。
+最小限の重み（0.001）で崩壊を防ぎつつ、異常の「分布外性」を過度に抑制しない。
+
+---
+
+## 4. 異常スコア（トリプルシグナル）
+
+```
+anomaly_score[t] = α · recon_err[t] + β · latent_pred_err[t] + γ · obs_pred_err[t]
+
+recon_err[t]     = ||x[t] - decoder(encoder(x[t]))||²
+  → 「このデータ点は正常 manifold に乗っているか？」
+
+latent_pred_err[t] = ||z[t] - z_pred[t-1]||²
+  → 「この遷移は正常ダイナミクスに従うか？（潜在空間）」
+
+obs_pred_err[t]   = ||x[t] - x_pred[t-1]||²
+  → 「この遷移は正常ダイナミクスに従うか？（観測空間）」
+```
+
+デフォルト重み: `α=1.0, β=0.5, γ=0.5`（config から調整可能）
+
+---
+
+## 5. ハイパーパラメータ
+
+| パラメータ | 値 | 根拠 |
+|:---|:---|:---|
+| d_model | 24 | 最小限。以前 64→32 で精度変化なし、24 でも十分と予想 |
+| d_state | 8 | 最小限の状態次元 |
+| expand | 2 | 標準 |
+| n_heads | 2 | d_model=24, expand=2 → d_inner=48, d_head=24 |
+| n_layers | 3 | fast/medium/slow のマルチスケール |
+| stability_weight | 0.001 | 崩壊防止の最小限 |
+| curvature_weight | 0.0 | 異常検知では必須 |
+| recon_weight | 1.0 | 標準 |
+| α_recon | 1.0 | 再構成誤差に最大重み |
+| β_latent | 0.5 | 潜在予測誤差 |
+| γ_obs | 0.5 | 観測予測誤差 |
+
+---
+
+## 6. Quick モード用データセット
+
+4 カテゴリから 1 つずつ選択（計 4 ファイル）:
+
+| カテゴリ | ファイル | 選択理由 |
+|:---|:---|:---|
+| realKnownCause | ambient_temperature_system_failure.csv | 明確な異常、中規模 |
+| realAWSCloudwatch | ec2_cpu_utilization_5f5533.csv | 実運用データ、ノイズ多 |
+| artificialWithAnomaly | art_daily_jumpsdown.csv | 人工的だがレベルシフトあり |
+| realTraffic | occupancy_t4013.csv | 周期性＋異常 |
+
+`nab_config.toml` の `mode.current = "full"` で全データセット評価に切り替え可能。
+
+---
+
+## 7. SOTA との差を埋める次の一手
+
+1. **マルチホライズン潜在予測**: 現在は 1-step のみ。5-step, 10-step の潜在予測誤差を追加。
+   ただし、JEPA の潜在空間閉ループの安定性が前提。まずは 1-step でベースラインを確立。
+2. **アンサンブル**: 3〜5 シードのモデルを訓練し、異常スコアの中央値/最大値を合成。
+3. **a_re 減衰率の調整**: 長期記憶を強化するため、slow レイヤーの a_re 範囲を緩和。

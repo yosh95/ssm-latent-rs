@@ -23,7 +23,7 @@ from nab.scorer import scoreCorpus
 from nab.util import convertResultsPathToDataPath
 
 def main():
-    detector = "ssm_latent_multiscale"
+    detector = "ssm_latent_jepa"
     root = os.path.dirname(os.path.abspath(__file__))
     
     data_dir = os.path.join(root, "data")
