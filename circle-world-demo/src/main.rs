@@ -3,7 +3,7 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::Tensor;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
-use ssm_latent_model::predictor::MultiScaleMambaPredictor;
+use ssm_latent_model::latent::{LatentLossArgs, MultiScaleLatentPredictor};
 use ssm_latent_model::ssm::MultiScaleSsmConfig;
 use std::thread::sleep;
 use std::time::Duration;
@@ -99,7 +99,7 @@ fn main() {
 
     println!("==========================================================");
     println!("     📖 The Chronicles of the Digital Explorer");
-    println!("     (Pure Mamba — Imagination loop in d_model space)");
+    println!("     (Mamba + JEPA — Latent-space prediction)");
     println!("     Backend: {}", backend_name);
     println!("==========================================================");
     sleep(Duration::from_millis(800));
@@ -124,8 +124,13 @@ fn main() {
     let action_dim = 2; // (ax, ay) — velocity tangent to circle
     let seq_len = 32;
     let batch_size = 4;
-    let epochs = 160;
+    let epochs = 150;
     let learning_rate = 1e-3;
+
+    // JEPA loss weights
+    let recon_weight = 1.0;     // reconstruction weight (encoder quality)
+    let stability_weight = 0.01; // VICReg — prevents latent collapse
+    let curvature_weight = 0.005; // Temporal Straightening — smooth trajectories
 
     let ssm_config = MultiScaleSsmConfig::new(32, 8, 2, 2, 1)
         .with_n_layers(3)
@@ -133,28 +138,27 @@ fn main() {
         .with_conv_kernel(4);
 
     println!(
-        "Config: d_model={}, d_state={}, expand={}, heads={}, layers={}, obs_dim={}, action_dim={}",
-        ssm_config.d_model,
-        ssm_config.d_state,
-        ssm_config.expand,
-        ssm_config.n_heads,
-        ssm_config.n_layers,
-        obs_dim,
-        action_dim,
+        "Config: d_model={}, d_state={}, expand={}, heads={}, layers={}",
+        ssm_config.d_model, ssm_config.d_state, ssm_config.expand,
+        ssm_config.n_heads, ssm_config.n_layers,
+    );
+    println!(
+        "JEPA: recon_w={}, stability_w={}, curvature_w={}",
+        recon_weight, stability_weight, curvature_weight,
     );
 
-    let mut explorer = MultiScaleMambaPredictor::<MyAutodiffBackend>::new(
+    let mut explorer = MultiScaleLatentPredictor::<MyAutodiffBackend>::new(
         &ssm_config,
-        obs_dim + action_dim,
         obs_dim,
+        action_dim,
         &device,
     );
-    let mut brain_optimizer =
-        AdamConfig::new().init::<MyAutodiffBackend, MultiScaleMambaPredictor<MyAutodiffBackend>>();
+    let mut brain_optimizer = AdamConfig::new()
+        .init::<MyAutodiffBackend, MultiScaleLatentPredictor<MyAutodiffBackend>>();
 
     // --- Part 2: Dreaming ---
     println!("\n[Part 2: Dreaming]");
-    println!("The Explorer dreams. Training with obs+action → next-obs.");
+    println!("The Explorer dreams. Training in latent space (JEPA-style).");
     sleep(Duration::from_millis(1000));
 
     // Initial state
@@ -191,9 +195,31 @@ fn main() {
             &device,
         );
 
-        // Use forward_with_action: obs + action fused in d_model, then SSM → next obs
-        let predictions = explorer.forward_with_action(obs_tensor.clone(), act_tensor);
-        let loss = explorer.loss(predictions, obs_tensor);
+        // ── JEPA forward pass ──
+        // encoder: obs → z (latent space)
+        // action_encoder: act → a (latent space)
+        // fusion: [z, a] → u
+        // SSM: u → predicted_z (predicts next latent)
+        // decoder: z → reconstructed_x, predicted_z → predicted_x
+        let (z, predicted_z, reconstructed_x, predicted_x) =
+            explorer.forward(obs_tensor.clone(), act_tensor);
+
+        // ── JEPA loss ──
+        // L = MSE(z_pred, z_next)  ← latent prediction (core JEPA)
+        //   + recon_w · (MSE(recon_x, x) + MSE(pred_x, x_next))  ← reconstruction
+        //   + stability_w · VICReg(z)  ← prevents representation collapse
+        //   + curvature_w · Σ|z_t - 2z_{t-1} + z_{t-2}|²  ← smooth trajectories
+        let loss_args = LatentLossArgs {
+            z,
+            pred_z: predicted_z,
+            reconstructed_x,
+            predicted_x,
+            original_x: obs_tensor,
+            stability_weight,
+            curvature_weight,
+            recon_weight,
+        };
+        let loss = explorer.loss(loss_args);
 
         let current_loss: f32 = loss.clone().into_data().as_slice::<f32>().unwrap()[0];
 
@@ -220,7 +246,7 @@ fn main() {
     // --- Part 3: Imagination ---
     println!("\n[Part 3: Pure Imagination]");
     println!("No more observations. The Explorer imagines the future");
-    println!("using only its internal SSM state (d_model loop).");
+    println!("using only its latent state (JEPA latent loop).");
     sleep(Duration::from_millis(1500));
 
     run_demo(
@@ -231,37 +257,27 @@ fn main() {
 
     println!("--------------------------------------------------");
     println!("The Explorer traversed the unknown using only its mind.");
-    println!("Pure Mamba. d_model loop. No drift.");
+    println!("Mamba + JEPA. Latent loop with curvature + stability.");
 }
 
 fn run_demo<B: burn::tensor::backend::Backend>(
-    model: &MultiScaleMambaPredictor<B>,
+    model: &MultiScaleLatentPredictor<B>,
     device: &B::Device,
     title: &str,
 ) {
     println!("\n--- {} ---", title);
 
-    // Encode initial observation to get the first SSM output y_0
+    // Encode initial observation → z_0 (enter latent space)
     let initial_obs = Tensor::<B, 2>::from_data(
         burn::tensor::TensorData::new(vec![1.0f32, 0.0f32], [1, 2]),
         device,
     );
-    // We need y_0. Run a single forward pass through input_proj then SSM.
-    // Since we don't have an action for t=0, use zero action.
-    let zero_action = Tensor::<B, 2>::from_data(
-        burn::tensor::TensorData::new(vec![0.0f32, 0.0f32], [1, 2]),
-        device,
-    );
+    let initial_z = model
+        .encode(initial_obs.unsqueeze_dim::<3>(1))
+        .reshape([1, model.d_model]); // [1, d_model]
 
-    let obs_enc = model.obs_proj.forward(initial_obs); // [1, d_model]
-    let act_enc = model.action_proj.forward(zero_action); // [1, d_model]
-    let u_concat = Tensor::cat(vec![obs_enc, act_enc], 1); // [1, 2*d_model]
-    let u = model.imagine_fusion.forward(u_concat); // [1, d_model]
-
-    // Get initial SSM output y_0 through the multi-scale stack
-    let init_state = model.zero_state(1, device);
-    let (mut y_current, next_ssms) = model.ssms.forward_step(u, &init_state.ssms);
-    let mut state = ssm_latent_model::predictor::MultiScalePredictorState { ssms: next_ssms };
+    let mut z_current = initial_z;
+    let mut state = model.ssm.zero_state(1, device);
 
     for t in 1..=20 {
         let angle = (t as f32) * 0.3;
@@ -269,16 +285,24 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         let real_y = angle.sin();
 
         let action = Tensor::<B, 2>::from_data(
-            burn::tensor::TensorData::new(vec![-0.1 * angle.sin(), 0.1 * angle.cos()], [1, 2]),
+            burn::tensor::TensorData::new(
+                vec![-0.1 * angle.sin(), 0.1 * angle.cos()],
+                [1, 2],
+            ),
             device,
         );
 
-        // Imagination step: y_current (d_model) + action → SSM → y_next (d_model)
-        let (pred, y_next, next_state) = model.step_imagine(y_current, action, state);
+        // ── JEPA imagination step ──
+        // z_current + action → SSM → z_next (predicted next latent)
+        let (z_next, next_state) = model.step(z_current.clone(), action, state);
         state = next_state;
-        y_current = y_next;
 
-        let pred_data = pred.into_data();
+        // Decode z_next → observation (exit latent space for visualization)
+        let pred_obs = model
+            .decode(z_next.clone().unsqueeze_dim::<3>(1))
+            .reshape([1, 2]);
+
+        let pred_data = pred_obs.into_data();
         let pred_slice = pred_data.as_slice::<f32>().unwrap();
 
         draw_frame(
@@ -288,5 +312,7 @@ fn run_demo<B: burn::tensor::backend::Backend>(
             Some(([pred_slice[0], pred_slice[1]], 'O', "Mental Map")),
         );
         sleep(Duration::from_millis(150));
+
+        z_current = z_next;
     }
 }
