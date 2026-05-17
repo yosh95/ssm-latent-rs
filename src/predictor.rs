@@ -9,13 +9,11 @@
 //! - [`MultiScaleMambaPredictor`]: stacked multi-scale SSM blocks, captures
 //!   patterns across fast/medium/slow timescales simultaneously
 
-use crate::ssm::{
-    MultiScaleSsmBlock, MultiScaleSsmConfig, MultiScaleState, SsmBlock, SsmConfig,
-};
+use crate::ssm::{MultiScaleSsmBlock, MultiScaleSsmConfig, MultiScaleState, SsmBlock, SsmConfig};
 use burn::module::Module;
 use burn::nn::{Linear, LinearConfig};
-use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
+use burn::tensor::backend::Backend;
 
 /// Mutable state for single-layer autoregressive streaming inference.
 #[derive(Clone)]
@@ -33,34 +31,6 @@ pub struct PredictorState<B: Backend> {
 pub struct MultiScalePredictorState<B: Backend> {
     /// Multi-scale SSM states
     pub ssms: MultiScaleState<B>,
-}
-
-impl<B: Backend> MultiScalePredictorState<B> {
-    pub fn zero(
-        batch: usize,
-        n_layers: usize,
-        n_heads: usize,
-        d_state: usize,
-        d_head_mimo: usize,
-        use_conv: bool,
-        d_inner: usize,
-        conv_kernel: usize,
-        device: &B::Device,
-    ) -> Self {
-        Self {
-            ssms: MultiScaleState::zeros(
-                batch,
-                n_layers,
-                n_heads,
-                d_state,
-                d_head_mimo,
-                use_conv,
-                d_inner,
-                conv_kernel,
-                device,
-            ),
-        }
-    }
 }
 
 // ─── Single-layer MambaPredictor ────────────────────────────────────────
@@ -208,19 +178,29 @@ impl<B: Backend> MambaPredictor<B> {
 ///
 /// Each layer has residual connections + RMSNorm. No encoder/decoder, no JEPA.
 /// The SSM hidden state *is* the world model.
+///
+/// ## Forward paths
+///
+/// All paths share the same observation and fusion projections:
+///
+/// - **Observation-only** (`forward` / `step`): fuses `obs_proj(x)` with a
+///   zero-action vector through `imagine_fusion`. Training and inference produce
+///   consistent representations because the same weights are always used.
+///
+/// - **Action-conditioned** (`forward_with_action` / `step_imagine`): fuses
+///   `obs_proj(obs)` with `action_proj(action)` through `imagine_fusion`.
+///   Use this when ground-truth or planned actions are available.
 #[derive(Module, Debug)]
 pub struct MultiScaleMambaPredictor<B: Backend> {
-    /// Input projection: `input_dim` → `d_model`
-    pub input_proj: Linear<B>,
     /// Multi-scale stacked SSM blocks (different timescales per layer)
     pub ssms: MultiScaleSsmBlock<B>,
     /// Output projection: `d_model` → `output_dim`
     pub output_proj: Linear<B>,
-    /// Fusion for imagination mode: concat(y_t, action_encoded) → d_model
+    /// Fuses encoded observation and action: `2 * d_model` → `d_model`
     pub imagine_fusion: Linear<B>,
-    /// Observation projection (separate from combined input_proj): obs_dim → d_model
+    /// Observation projection: `obs_dim` → `d_model` (shared across all paths)
     pub obs_proj: Linear<B>,
-    /// Action projection for imagination: action_dim → d_model
+    /// Action projection for imagination: `action_dim` → `d_model`
     pub action_proj: Linear<B>,
     /// Model dimension
     pub d_model: usize,
@@ -242,24 +222,25 @@ pub struct MultiScaleMambaPredictor<B: Backend> {
 
 impl<B: Backend> MultiScaleMambaPredictor<B> {
     /// Create a new multi-scale predictor.
+    ///
+    /// `input_dim` and `output_dim` are the observation and prediction
+    /// dimensions respectively. Both paths (`forward` and `forward_with_action`)
+    /// share the same `obs_proj` weights.
     pub fn new(
         config: &MultiScaleSsmConfig,
         input_dim: usize,
         output_dim: usize,
         device: &B::Device,
     ) -> Self {
-        let input_proj = LinearConfig::new(input_dim, config.d_model).init(device);
         let ssms = MultiScaleSsmBlock::new(config, device);
         let output_proj = LinearConfig::new(config.d_model, output_dim).init(device);
-        // imagination: concat(ssm_output[d_model], action_encoded[d_model]) → d_model
+        // fuses obs_proj(obs) and action_proj(action): 2*d_model → d_model
         let imagine_fusion = LinearConfig::new(config.d_model * 2, config.d_model).init(device);
-        // action encoder for imagination mode (shared dim)
+        // shared observation encoder used by all forward paths
+        let obs_proj = LinearConfig::new(input_dim, config.d_model).init(device);
         let action_proj = LinearConfig::new(output_dim, config.d_model).init(device);
-        // observation projection for separate obs/action path: obs_dim → d_model
-        let obs_proj = LinearConfig::new(output_dim, config.d_model).init(device);
 
         Self {
-            input_proj,
             ssms,
             output_proj,
             imagine_fusion,
@@ -276,52 +257,46 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
         }
     }
 
-    /// Full-sequence forward pass for training.
+    /// Full-sequence forward pass for training (observation-only, no action conditioning).
     ///
+    /// Routes through `obs_proj → imagine_fusion(obs, zero_action) → SSM`, sharing
+    /// the same learned projections as [`Self::forward_with_action`].
     /// `predictions[t]` is the model's estimate of `x[t+1]`.
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-        let u = self.input_proj.forward(x);
+        let [batch, seq_len, _] = x.dims();
+        let obs_enc = self.obs_proj.forward(x);
+        let zero_action = Tensor::zeros([batch, seq_len, self.d_model], &obs_enc.device());
+        let u = self
+            .imagine_fusion
+            .forward(Tensor::cat(vec![obs_enc, zero_action], 2));
         let y = self.ssms.forward(u);
         self.output_proj.forward(y)
     }
 
-    /// Autoregressive step for streaming inference.
+    /// Autoregressive step for streaming inference (observation-only).
+    ///
+    /// Equivalent to [`Self::forward`] but processes one timestep at a time.
     pub fn step(
         &self,
         x: Tensor<B, 2>,
         state: MultiScalePredictorState<B>,
     ) -> (Tensor<B, 2>, MultiScalePredictorState<B>) {
-        let u = self.input_proj.forward(x);
+        let [batch, _] = x.dims();
+        let obs_enc = self.obs_proj.forward(x);
+        let zero_action = Tensor::zeros([batch, self.d_model], &obs_enc.device());
+        let u = self
+            .imagine_fusion
+            .forward(Tensor::cat(vec![obs_enc, zero_action], 1));
         let (y, next_ssms) = self.ssms.forward_step(u, &state.ssms);
-
         let pred = self.output_proj.forward(y);
-
-        (
-            pred,
-            MultiScalePredictorState { ssms: next_ssms },
-        )
+        (pred, MultiScalePredictorState { ssms: next_ssms })
     }
 
     /// Create a zero-initialized state for streaming inference.
-    pub fn zero_state(
-        &self,
-        batch: usize,
-        device: &B::Device,
-    ) -> MultiScalePredictorState<B> {
-        let d_head = self.d_inner / self.n_heads;
-        let d_head_mimo = d_head / self.mimo_rank;
-
-        MultiScalePredictorState::zero(
-            batch,
-            self.n_layers,
-            self.n_heads,
-            self.d_state,
-            d_head_mimo,
-            self.use_conv,
-            self.d_inner,
-            self.conv_kernel,
-            device,
-        )
+    pub fn zero_state(&self, batch: usize, device: &B::Device) -> MultiScalePredictorState<B> {
+        MultiScalePredictorState {
+            ssms: self.ssms.zero_state(batch, device),
+        }
     }
 
     /// Simple MSE loss for next-step prediction.
@@ -347,8 +322,8 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
     /// - `next_state` is the updated multi-scale SSM state
     pub fn step_imagine(
         &self,
-        y_prev: Tensor<B, 2>,       // [batch, d_model] — previous SSM output
-        action: Tensor<B, 2>,       // [batch, action_dim]
+        y_prev: Tensor<B, 2>, // [batch, d_model] — previous SSM output
+        action: Tensor<B, 2>, // [batch, action_dim]
         state: MultiScalePredictorState<B>,
     ) -> (Tensor<B, 2>, Tensor<B, 2>, MultiScalePredictorState<B>) {
         // Decode SSM output to observation space, then re-encode to match
@@ -361,7 +336,7 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
 
         let a = self.action_proj.forward(action); // [batch, d_model]
         let u_concat = Tensor::cat(vec![y_enc, a], 1); // [batch, 2*d_model]
-        let u = self.imagine_fusion.forward(u_concat);  // [batch, d_model]
+        let u = self.imagine_fusion.forward(u_concat); // [batch, d_model]
 
         let (y_next, next_ssms) = self.ssms.forward_step(u, &state.ssms);
 
@@ -381,13 +356,13 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
     /// This matches the JEPA training pattern but with observation output.
     pub fn forward_with_action(
         &self,
-        observations: Tensor<B, 3>,  // [batch, seq_len, obs_dim]
-        actions: Tensor<B, 3>,       // [batch, seq_len, action_dim]
+        observations: Tensor<B, 3>, // [batch, seq_len, obs_dim]
+        actions: Tensor<B, 3>,      // [batch, seq_len, action_dim]
     ) -> Tensor<B, 3> {
         let obs_enc = self.obs_proj.forward(observations); // [B, T, d_model]
-        let act_enc = self.action_proj.forward(actions);     // [B, T, d_model]
+        let act_enc = self.action_proj.forward(actions); // [B, T, d_model]
         let u_concat = Tensor::cat(vec![obs_enc, act_enc], 2); // [B, T, 2*d_model]
-        let u = self.imagine_fusion.forward(u_concat);          // [B, T, d_model]
+        let u = self.imagine_fusion.forward(u_concat); // [B, T, d_model]
         let y = self.ssms.forward(u);
         self.output_proj.forward(y)
     }

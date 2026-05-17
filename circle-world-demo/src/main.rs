@@ -84,11 +84,17 @@ fn main() {
 
     let backend_name = {
         #[cfg(feature = "wgpu")]
-        {"Wgpu (GPU)"}
+        {
+            "Wgpu (GPU)"
+        }
         #[cfg(all(not(feature = "wgpu"), feature = "ndarray"))]
-        {"NdArray (CPU)"}
+        {
+            "NdArray (CPU)"
+        }
         #[cfg(all(not(feature = "wgpu"), not(feature = "ndarray")))]
-        {"NdArray (CPU)"}
+        {
+            "NdArray (CPU)"
+        }
     };
 
     println!("==========================================================");
@@ -114,8 +120,8 @@ fn main() {
     }
 
     // ── Model config ──
-    let obs_dim = 2;       // (x, y)
-    let action_dim = 2;    // (ax, ay) — velocity tangent to circle
+    let obs_dim = 2; // (x, y)
+    let action_dim = 2; // (ax, ay) — velocity tangent to circle
     let seq_len = 32;
     let batch_size = 4;
     let epochs = 160;
@@ -128,12 +134,20 @@ fn main() {
 
     println!(
         "Config: d_model={}, d_state={}, expand={}, heads={}, layers={}, obs_dim={}, action_dim={}",
-        ssm_config.d_model, ssm_config.d_state, ssm_config.expand,
-        ssm_config.n_heads, ssm_config.n_layers, obs_dim, action_dim,
+        ssm_config.d_model,
+        ssm_config.d_state,
+        ssm_config.expand,
+        ssm_config.n_heads,
+        ssm_config.n_layers,
+        obs_dim,
+        action_dim,
     );
 
     let mut explorer = MultiScaleMambaPredictor::<MyAutodiffBackend>::new(
-        &ssm_config, obs_dim + action_dim, obs_dim, &device,
+        &ssm_config,
+        obs_dim + action_dim,
+        obs_dim,
+        &device,
     );
     let mut brain_optimizer =
         AdamConfig::new().init::<MyAutodiffBackend, MultiScaleMambaPredictor<MyAutodiffBackend>>();
@@ -145,7 +159,7 @@ fn main() {
 
     // Initial state
     println!("\n--- Initial Mental Map (Before Training) ---");
-        run_demo(&explorer.valid(), &device, "Epoch 0 (Untrained)");
+    run_demo(&explorer.valid(), &device, "Epoch 0 (Untrained)");
     sleep(Duration::from_millis(1500));
 
     for epoch in 1..=epochs {
@@ -239,10 +253,10 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         device,
     );
 
-    let obs_enc = model.obs_proj.forward(initial_obs);        // [1, d_model]
-    let act_enc = model.action_proj.forward(zero_action);       // [1, d_model]
-    let u_concat = Tensor::cat(vec![obs_enc, act_enc], 1);      // [1, 2*d_model]
-    let u = model.imagine_fusion.forward(u_concat);              // [1, d_model]
+    let obs_enc = model.obs_proj.forward(initial_obs); // [1, d_model]
+    let act_enc = model.action_proj.forward(zero_action); // [1, d_model]
+    let u_concat = Tensor::cat(vec![obs_enc, act_enc], 1); // [1, 2*d_model]
+    let u = model.imagine_fusion.forward(u_concat); // [1, d_model]
 
     // Get initial SSM output y_0 through the multi-scale stack
     let init_state = model.zero_state(1, device);
@@ -255,10 +269,7 @@ fn run_demo<B: burn::tensor::backend::Backend>(
         let real_y = angle.sin();
 
         let action = Tensor::<B, 2>::from_data(
-            burn::tensor::TensorData::new(
-                vec![-0.1 * angle.sin(), 0.1 * angle.cos()],
-                [1, 2],
-            ),
+            burn::tensor::TensorData::new(vec![-0.1 * angle.sin(), 0.1 * angle.cos()], [1, 2]),
             device,
         );
 

@@ -293,8 +293,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             &device,
         );
 
-        let mut model =
-            MultiScaleMambaPredictor::<MyBackend>::new(&ssm_config, feature_dim, feature_dim, &device);
+        let mut model = MultiScaleMambaPredictor::<MyBackend>::new(
+            &ssm_config,
+            feature_dim,
+            feature_dim,
+            &device,
+        );
         let mut optim = AdamConfig::new().init();
 
         let mut best_loss = f32::INFINITY;

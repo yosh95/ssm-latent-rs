@@ -220,33 +220,34 @@ impl<B: Backend> LatentPredictor<B> {
     /// - `L_stability`: Gaussian moment matching on random projections (VICReg-style)
     /// - `L_curvature`: Second-order finite difference on latent trajectory
     pub fn loss(&self, args: LatentLossArgs<B>) -> Tensor<B, 1> {
-        let [batch, seq_len, _] = args.z.dims();
-        let target_z = args.z.clone().detach().slice([0..batch, 1..seq_len]);
-        let pred_slice = args.pred_z.clone().slice([0..batch, 0..seq_len - 1]);
-
-        let mse_latent = (target_z - pred_slice).powf_scalar(2.0).mean();
-
-        // Reconstruction from current
-        let mse_recons = (args.original_x.clone() - args.reconstructed_x)
-            .powf_scalar(2.0)
-            .mean();
-        // Reconstruction from predicted (next obs)
-        let target_x = args.original_x.detach().slice([0..batch, 1..seq_len]);
-        let pred_x_slice = args.predicted_x.slice([0..batch, 0..seq_len - 1]);
-        let mse_pred_x = (target_x - pred_x_slice).powf_scalar(2.0).mean();
-
-        // Efficient O(T) stability loss via Gaussian moment matching
-        let reg_loss = stability_loss(args.z.clone(), self.stability_projections.val());
-
-        // Temporal Straightening: Reduce curvature to improve planning stability
-        let curv_loss = curvature_loss(args.z);
-
-        mse_latent
-            + mse_recons.mul_scalar(args.recon_weight)
-            + mse_pred_x.mul_scalar(args.recon_weight)
-            + reg_loss.mul_scalar(args.stability_weight)
-            + curv_loss.mul_scalar(args.curvature_weight)
+        latent_loss(args, self.stability_projections.val())
     }
+}
+
+/// Shared loss computation used by both [`LatentPredictor`] and [`MultiScaleLatentPredictor`].
+///
+/// See [`LatentPredictor::loss`] for the full formula.
+fn latent_loss<B: Backend>(args: LatentLossArgs<B>, projections: Tensor<B, 2>) -> Tensor<B, 1> {
+    let [batch, seq_len, _] = args.z.dims();
+    let target_z = args.z.clone().detach().slice([0..batch, 1..seq_len]);
+    let pred_slice = args.pred_z.clone().slice([0..batch, 0..seq_len - 1]);
+
+    let mse_latent = (target_z - pred_slice).powf_scalar(2.0).mean();
+    let mse_recons = (args.original_x.clone() - args.reconstructed_x)
+        .powf_scalar(2.0)
+        .mean();
+    let target_x = args.original_x.detach().slice([0..batch, 1..seq_len]);
+    let pred_x_slice = args.predicted_x.slice([0..batch, 0..seq_len - 1]);
+    let mse_pred_x = (target_x - pred_x_slice).powf_scalar(2.0).mean();
+
+    let reg_loss = stability_loss(args.z.clone(), projections);
+    let curv_loss = curvature_loss(args.z);
+
+    mse_latent
+        + mse_recons.mul_scalar(args.recon_weight)
+        + mse_pred_x.mul_scalar(args.recon_weight)
+        + reg_loss.mul_scalar(args.stability_weight)
+        + curv_loss.mul_scalar(args.curvature_weight)
 }
 
 /// Temporal Straightening loss: minimizes the second-order finite difference
@@ -460,25 +461,6 @@ impl<B: Backend> MultiScaleLatentPredictor<B> {
 
     /// Compute training loss with prediction, reconstruction, stability, and curvature terms.
     pub fn loss(&self, args: LatentLossArgs<B>) -> Tensor<B, 1> {
-        let [batch, seq_len, _] = args.z.dims();
-        let target_z = args.z.clone().detach().slice([0..batch, 1..seq_len]);
-        let pred_slice = args.pred_z.clone().slice([0..batch, 0..seq_len - 1]);
-
-        let mse_latent = (target_z - pred_slice).powf_scalar(2.0).mean();
-        let mse_recons = (args.original_x.clone() - args.reconstructed_x)
-            .powf_scalar(2.0)
-            .mean();
-        let target_x = args.original_x.detach().slice([0..batch, 1..seq_len]);
-        let pred_x_slice = args.predicted_x.slice([0..batch, 0..seq_len - 1]);
-        let mse_pred_x = (target_x - pred_x_slice).powf_scalar(2.0).mean();
-
-        let reg_loss = stability_loss(args.z.clone(), self.stability_projections.val());
-        let curv_loss = curvature_loss(args.z);
-
-        mse_latent
-            + mse_recons.mul_scalar(args.recon_weight)
-            + mse_pred_x.mul_scalar(args.recon_weight)
-            + reg_loss.mul_scalar(args.stability_weight)
-            + curv_loss.mul_scalar(args.curvature_weight)
+        latent_loss(args, self.stability_projections.val())
     }
 }

@@ -108,7 +108,12 @@ impl<B: Backend> MultiScaleSsmBlock<B> {
                     config.n_heads,
                     config.mimo_rank,
                 )
-                .with_use_conv(config.use_conv && layer_idx == 0) // conv only on first layer
+                // Conv1d captures short-range local context (e.g. token n-grams).
+                // Applying it only on the first (fast) layer is sufficient because
+                // the slow layers receive already-convolved representations via the
+                // residual connections, and adding conv to every layer multiplies
+                // memory and compute without measurable quality gain.
+                .with_use_conv(config.use_conv && layer_idx == 0)
                 .with_conv_kernel(config.conv_kernel),
                 device,
             );
@@ -192,6 +197,34 @@ impl<B: Backend> MultiScaleSsmBlock<B> {
             },
         )
     }
+
+    /// Create a zero-initialized [`MultiScaleState`] for autoregressive inference.
+    ///
+    /// Derives all dimensions from `self`, so callers only need `batch` and `device`.
+    pub fn zero_state(&self, batch: usize, device: &B::Device) -> MultiScaleState<B> {
+        let d_head_mimo = (self.d_inner / self.n_heads) / self.mimo_rank;
+        let h = (0..self.n_layers)
+            .map(|_| Tensor::zeros([batch, self.n_heads, self.d_state, d_head_mimo], device))
+            .collect();
+        let prev_bx = (0..self.n_layers).map(|_| None).collect();
+        let conv_state = (0..self.n_layers)
+            .map(|i| {
+                if i == 0 {
+                    self.layers[0].conv1d.as_ref().map(|c| {
+                        let kernel_size = c.weight.dims()[2];
+                        Tensor::zeros([batch, self.d_inner, kernel_size - 1], device)
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        MultiScaleState {
+            h,
+            prev_bx,
+            conv_state,
+        }
+    }
 }
 
 /// Mutable state for multi-scale SSM autoregressive inference.
@@ -203,45 +236,6 @@ pub struct MultiScaleState<B: Backend> {
     pub prev_bx: Vec<Option<Tensor<B, 4>>>,
     /// Convolution states: one per layer (None if no conv)
     pub conv_state: Vec<Option<Tensor<B, 3>>>,
-}
-
-impl<B: Backend> MultiScaleState<B> {
-    #[allow(clippy::too_many_arguments)]
-    pub fn zeros(
-        batch: usize,
-        n_layers: usize,
-        n_heads: usize,
-        d_state: usize,
-        d_head_mimo: usize,
-        use_conv: bool,
-        d_inner: usize,
-        conv_kernel: usize,
-        device: &B::Device,
-    ) -> Self {
-        let h = (0..n_layers)
-            .map(|_| Tensor::zeros([batch, n_heads, d_state, d_head_mimo], device))
-            .collect();
-        let prev_bx = (0..n_layers).map(|_| None).collect();
-        let conv_state = if use_conv {
-            (0..n_layers)
-                .map(|i| {
-                    if i == 0 {
-                        Some(Tensor::zeros([batch, d_inner, conv_kernel - 1], device))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            (0..n_layers).map(|_| None).collect()
-        };
-
-        Self {
-            h,
-            prev_bx,
-            conv_state,
-        }
-    }
 }
 
 /// Configuration for the SSM (State Space Model) block.
