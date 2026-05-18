@@ -41,6 +41,7 @@ k_mad = 3.8
 alpha_ewma = 0.1
 k_ewma = 3.8
 guard_z = 3.5
+threshold_decay = 0.001   # slowly pull EWMA back to baseline (prevents inflation)
 power = 0.5               # percentile power: 0.5 = sqrt (wider spread), 0.25 = sharp (narrow)
 
 # Datasets for quick mode (one from each category)

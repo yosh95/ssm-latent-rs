@@ -10,8 +10,8 @@ targets = [
 
 [advisories]
 ignore = []
-unmaintained = "warn"
-unsound = "deny"
+unmaintained = "workspace"
+unsound = "all"
 yanked = "deny"
 
 [licenses]

@@ -239,9 +239,14 @@ impl EwmaThreshold {
 /// - The EWMA is **pre-warmed** with all calibration scores during construction,
 ///   eliminating the warmup delay that previously allowed false positives
 ///   on borderline-normal samples at inference start.
+/// - **Threshold decay** slowly pulls the EWMA back toward the calibration baseline,
+///   preventing permanent threshold inflation after false positives or borderline events.
 struct HybridAdaptiveThreshold {
     baseline_threshold: f32,
     ewma: EwmaThreshold,
+    decay: f64,
+    baseline_mean: f64,
+    baseline_var: f64,
 }
 
 impl HybridAdaptiveThreshold {
@@ -249,19 +254,22 @@ impl HybridAdaptiveThreshold {
     /// - `k_mad`: sensitivity for MAD-based initial threshold (default 3.0)
     /// - `alpha`: EWMA smoothing factor (0.05–0.2; smaller = more stable)
     /// - `k_ewma`: sensitivity for EWMA online threshold (default 3.0)
+    /// - `decay`: threshold decay rate (0.0001–0.01; 0 = no decay)
     ///
     /// The baseline is the MAD-based threshold (median + k * 1.4826 * MAD).
     /// The EWMA is pre-warmed with all calibration scores so that it is
     /// immediately effective from the first inference sample — no online
     /// warmup delay.
-    fn from_calibration(scores: &[f32], k_mad: f32, alpha: f64, k_ewma: f64) -> Self {
+    fn from_calibration(scores: &[f32], k_mad: f32, alpha: f64, k_ewma: f64, decay: f64) -> Self {
         let mad_threshold = compute_mad_threshold(scores, k_mad);
         let mean = scores.iter().sum::<f32>() / scores.len() as f32;
         // Use MAD-based threshold as baseline.
         // Removed the hardcoded mean*4.0 floor which was often too high.
         let baseline = mad_threshold;
         let var = scores.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / scores.len() as f32;
-        let mut ewma = EwmaThreshold::new(alpha, k_ewma, 0, mean as f64, var as f64);
+        let baseline_mean = mean as f64;
+        let baseline_var = var as f64;
+        let mut ewma = EwmaThreshold::new(alpha, k_ewma, 0, baseline_mean, baseline_var);
         // Pre-warm the EWMA with all calibration scores so that the online
         // threshold is fully effective from the very first inference sample.
         // This eliminates the NaN warmup period that previously allowed
@@ -270,6 +278,9 @@ impl HybridAdaptiveThreshold {
         Self {
             baseline_threshold: baseline,
             ewma,
+            decay,
+            baseline_mean,
+            baseline_var,
         }
     }
 
@@ -277,6 +288,8 @@ impl HybridAdaptiveThreshold {
     /// - Anomalous scores are **not** fed into the EWMA (prevents contamination).
     /// - The effective threshold is the maximum of the EWMA threshold and
     ///   the MAD baseline — the threshold can only rise, never fall below baseline.
+    /// - After each step, the EWMA is pulled back toward the calibration baseline
+    ///   by `decay` factor, preventing irreversible threshold inflation.
     fn update_and_check(&mut self, score: f32) -> (f32, bool) {
         // EWMA is pre-warmed, so current_threshold() is always valid.
         let ewma_thresh = self.ewma.current_threshold();
@@ -288,6 +301,13 @@ impl HybridAdaptiveThreshold {
         // Only feed normal observations into the EWMA to keep it clean
         if !is_anomaly {
             self.ewma.observe(score);
+        }
+
+        // #6: Threshold decay — slowly pull EWMA back toward calibration baseline.
+        // This prevents permanent inflation after false positives.
+        if self.decay > 0.0 {
+            self.ewma.mean = (1.0 - self.decay) * self.ewma.mean + self.decay * self.baseline_mean;
+            self.ewma.var = (1.0 - self.decay) * self.ewma.var + self.decay * self.baseline_var;
         }
 
         (threshold, is_anomaly)
@@ -510,9 +530,10 @@ fn main() {
 
     let mut threshold_engine = HybridAdaptiveThreshold::from_calibration(
         &calibration_scores,
-        3.8, // k_mad: sensitive enough for anomalies, robust against near-normal variance
-        0.1, // alpha
+        3.8,    // k_mad: sensitive enough for anomalies, robust against near-normal variance
+        0.1,    // alpha
         3.8, // k_ewma: matches k_mad for consistency; EWMA is pre-warmed so effective immediately
+        0.0005, // decay: slowly pull EWMA back to baseline to prevent threshold inflation
     );
 
     let baseline = threshold_engine.baseline_threshold;

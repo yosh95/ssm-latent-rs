@@ -250,17 +250,17 @@ fn latent_loss<B: Backend>(args: LatentLossArgs<B>, projections: Tensor<B, 2>) -
         + curv_loss.mul_scalar(args.curvature_weight)
 }
 
-/// Temporal Straightening loss: minimizes the second-order finite difference
-/// of the latent trajectory to encourage locally straight paths.
+/// Temporal Straightening loss with optional time-delta weighting.
 ///
-/// Based on Wang et al. (2026) "Temporal Straightening for Latent Planning",
-/// this loss encourages the latent representation to evolve smoothly over time,
-/// which improves the accuracy of long-horizon planning.
+/// Minimizes the second-order finite difference of the latent trajectory
+/// to encourage locally straight paths. When `dt` is provided (non-uniform
+/// timestamps), the discrete acceleration is computed as:
 ///
-/// The second-order finite difference (discrete acceleration) is:
 /// ```text
-/// a_t = z_t - 2·z_{t-1} + z_{t-2}
+/// a_t = (z_t - z_{t-1})/Δt_{t} - (z_{t-1} - z_{t-2})/Δt_{t-1}
 /// ```
+///
+/// Otherwise falls back to uniform spacing: `a_t = z_t - 2·z_{t-1} + z_{t-2}`.
 ///
 /// Returns 0.0 when `seq_len < 3` (insufficient data for finite difference).
 ///
@@ -273,8 +273,7 @@ pub fn curvature_loss<B: Backend>(z: Tensor<B, 3>) -> Tensor<B, 1> {
         return Tensor::<B, 1>::from_data([0.0], &z.device());
     }
 
-    // Direct second-order finite difference: a_t = z_t - 2z_{t-1} + z_{t-2}
-    // This reduces the number of intermediate tensors and slice operations.
+    // Uniform-spacing second-order finite difference: a_t = z_t - 2z_{t-1} + z_{t-2}
     let z_t = z.clone().slice([0..batch, 2..seq_len]);
     let z_t_1 = z.clone().slice([0..batch, 1..seq_len - 1]);
     let z_t_2 = z.slice([0..batch, 0..seq_len - 2]);
@@ -282,6 +281,116 @@ pub fn curvature_loss<B: Backend>(z: Tensor<B, 3>) -> Tensor<B, 1> {
     let acceleration = z_t - z_t_1.mul_scalar(2.0) + z_t_2;
 
     acceleration.powf_scalar(2.0).mean().unsqueeze()
+}
+
+/// Time-delta-aware curvature loss for non-uniformly spaced sequences.
+///
+/// Uses the generalised second-order finite difference:
+///
+/// ```text
+/// a_t = (z_t - z_{t-1})/Δt_t - (z_{t-1} - z_{t-2})/Δt_{t-1}
+/// ```
+///
+/// # Arguments
+/// * `z` - Latent representations: `[batch, seq_len, d_model]`
+/// * `dt` - Time deltas between consecutive points: `[seq_len]` or `[batch, seq_len]`.
+///   `dt[t]` is the time difference from step `t-1` to step `t`.
+///   Must have `seq_len - 1` meaningful entries (first entry unused).
+///
+/// # Returns
+/// Scalar curvature loss (0.0 when `seq_len < 3`).
+///
+/// # Panics
+/// If any `dt[t]` (t ≥ 2) is ≤ 0.
+pub fn curvature_loss_with_dt<B: Backend>(z: Tensor<B, 3>, dt: Tensor<B, 2>) -> Tensor<B, 1> {
+    let [batch, seq_len, _d_model] = z.dims();
+
+    if seq_len < 3 {
+        return Tensor::<B, 1>::from_data([0.0], &z.device());
+    }
+
+    // dt shape: [batch, seq_len] or [seq_len]; broadcast to [batch, seq_len]
+    let dt = if dt.dims().len() == 1 {
+        dt.unsqueeze_dim::<1>(0).unsqueeze_dim::<3>(2) // [seq_len] → [1, seq_len, 1]
+    } else {
+        dt.unsqueeze_dim::<3>(2) // [batch, seq_len] → [batch, seq_len, 1]
+    };
+
+    // dt for steps t (from t-1 to t): dt[1..], dt[2..]
+    let dt_t = dt.clone().slice([0..batch, 2..seq_len]); // Δt_t
+    let dt_t1 = dt.slice([0..batch, 1..seq_len - 1]); // Δt_{t-1}
+
+    let z_t = z.clone().slice([0..batch, 2..seq_len]);
+    let z_t_1 = z.clone().slice([0..batch, 1..seq_len - 1]);
+    let z_t_2 = z.slice([0..batch, 0..seq_len - 2]);
+
+    // a_t = (z_t - z_{t-1})/Δt_t - (z_{t-1} - z_{t-2})/Δt_{t-1}
+    let first_term = (z_t - z_t_1.clone()) / dt_t.clamp_min(1e-6);
+    let second_term = (z_t_1 - z_t_2) / dt_t1.clamp_min(1e-6);
+    let acceleration = first_term - second_term;
+
+    acceleration.powf_scalar(2.0).mean().unsqueeze()
+}
+
+/// Running-statistics stability loss for small batch / sequence-length regimes.
+///
+/// Unlike [`stability_loss`] which computes per-batch statistics, this variant
+/// maintains exponential moving averages of mean and variance for each random
+/// projection direction. This is critical for anomaly detection where batch=1
+/// and seq_len may be small.
+///
+/// # Arguments
+/// * `z` - Latent representations: `[batch, seq_len, d_model]`
+/// * `w` - Normalized random projection matrix: `[d_model, n_projections]`
+/// * `running_mean` - Current EMA of projected means: `[n_projections]`
+/// * `running_var` - Current EMA of projected variances: `[n_projections]`
+/// * `momentum` - EMA decay factor (0.001–0.05; smaller = more stable)
+///
+/// # Returns
+/// `(loss, new_running_mean, new_running_var)` where `loss` penalises deviation
+/// from standard normal distribution (μ=0, σ²=1) against the *running* statistics.
+pub fn stability_loss_running<B: Backend>(
+    z: Tensor<B, 3>,
+    w: Tensor<B, 2>,
+    running_mean: Tensor<B, 1>,
+    running_var: Tensor<B, 1>,
+    momentum: f64,
+) -> (Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>) {
+    let [batch, seq_len, d_model] = z.dims();
+    let n_projections = w.dims()[1];
+
+    let z_flat = z.reshape([batch * seq_len, d_model]);
+    let projections = z_flat.matmul(w).reshape([batch, seq_len, n_projections]);
+
+    // Per-projection statistics over this mini-batch
+    let batch_mean = projections.clone().mean_dim(1).mean_dim(0).squeeze(); // [n_projections]
+    let batch_var = (projections
+        - batch_mean
+            .clone()
+            .unsqueeze_dim::<2>(0)
+            .unsqueeze_dim::<3>(1))
+    .powf_scalar(2.0)
+    .mean_dim(1)
+    .mean_dim(0)
+    .squeeze(); // [n_projections]
+
+    // Update running statistics with EMA
+    let new_running_mean =
+        running_mean.clone().mul_scalar(1.0 - momentum) + batch_mean.clone().mul_scalar(momentum);
+    let new_running_var =
+        running_var.clone().mul_scalar(1.0 - momentum) + batch_var.clone().mul_scalar(momentum);
+
+    // Loss: penalise deviation from standard normal (μ=0, σ²=1)
+    // using the batch statistics (not running) — we want the current batch
+    // to look like N(0,1), not just match the EMA.
+    let loss_mean = batch_mean.powf_scalar(2.0).mean();
+    let loss_var = (batch_var - 1.0).powf_scalar(2.0).mean();
+
+    (
+        (loss_mean + loss_var).unsqueeze(),
+        new_running_mean,
+        new_running_var,
+    )
 }
 
 /// Gaussian-based O(T) stability loss to prevent representation collapse in JEPA.
@@ -340,9 +449,10 @@ pub struct MultiScaleLatentPredictor<B: Backend> {
     pub encoder: Linear<B>,
     /// Decoder: reconstructs observations from latent
     pub decoder: Linear<B>,
-    /// Action encoder: maps actions to latent space (can receive zero actions for unsupervised mode)
-    pub action_encoder: Linear<B>,
-    /// Fusion: concatenates latent observation + latent action
+    /// Action encoder: maps actions to latent space.
+    /// `None` when constructed with `action_dim == 0` (unsupervised mode).
+    pub action_encoder: Option<Linear<B>>,
+    /// Fusion: either `2*d_model → d_model` (with action) or `d_model → d_model` (no action).
     pub fusion: Linear<B>,
     /// Multi-scale stacked SSM block
     pub ssm: MultiScaleSsmBlock<B>,
@@ -350,6 +460,8 @@ pub struct MultiScaleLatentPredictor<B: Backend> {
     pub stability_projections: Param<Tensor<B, 2>>,
     /// Model dimension
     pub d_model: usize,
+    /// Whether this predictor was constructed with action conditioning.
+    pub has_action: bool,
 }
 
 impl<B: Backend> MultiScaleLatentPredictor<B> {
@@ -363,8 +475,17 @@ impl<B: Backend> MultiScaleLatentPredictor<B> {
 
         let encoder = LinearConfig::new(input_dim, d_model).init(device);
         let decoder = LinearConfig::new(d_model, input_dim).init(device);
-        let action_encoder = LinearConfig::new(action_dim, d_model).init(device);
-        let fusion = LinearConfig::new(d_model * 2, d_model).init(device);
+
+        let (action_encoder, fusion, has_action) = if action_dim > 0 {
+            let ae = Some(LinearConfig::new(action_dim, d_model).init(device));
+            let f = LinearConfig::new(d_model * 2, d_model).init(device);
+            (ae, f, true)
+        } else {
+            // Unsupervised mode: fusion is d_model → d_model (identity-like projection)
+            let f = LinearConfig::new(d_model, d_model).init(device);
+            (None, f, false)
+        };
+
         let ssm = MultiScaleSsmBlock::new(config, device);
 
         // Fixed random projections for stability loss
@@ -389,6 +510,7 @@ impl<B: Backend> MultiScaleLatentPredictor<B> {
             ssm,
             stability_projections: Param::from_tensor(stability_projections.detach()),
             d_model,
+            has_action,
         }
     }
 
@@ -400,7 +522,10 @@ impl<B: Backend> MultiScaleLatentPredictor<B> {
         self.decoder.forward(z)
     }
 
-    /// Forward pass: encode → fuse with actions → multi-scale SSM → decode.
+    /// Forward pass: encode → fuse → multi-scale SSM → decode.
+    ///
+    /// - **With action** (`has_action == true`): fuses encoded observation + encoded action.
+    /// - **No action** (`has_action == false`): passes encoded observation directly through fusion.
     ///
     /// Returns (z, predicted_z, reconstructed_x, predicted_x).
     pub fn forward(
@@ -409,9 +534,31 @@ impl<B: Backend> MultiScaleLatentPredictor<B> {
         actions: Tensor<B, 3>,
     ) -> (Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>) {
         let z = self.encode(observations);
-        let a = self.action_encoder.forward(actions);
-        let u_concat = Tensor::cat(vec![z.clone(), a], 2);
-        let u = self.fusion.forward(u_concat);
+        let u = if let Some(ref ae) = self.action_encoder {
+            let a = ae.forward(actions);
+            let u_concat = Tensor::cat(vec![z.clone(), a], 2);
+            self.fusion.forward(u_concat)
+        } else {
+            self.fusion.forward(z.clone())
+        };
+        let predicted_z = self.ssm.forward(u);
+
+        let reconstructed_x = self.decode(z.clone());
+        let predicted_x = self.decode(predicted_z.clone());
+
+        (z, predicted_z, reconstructed_x, predicted_x)
+    }
+
+    /// Forward pass without actions (unsupervised mode).
+    ///
+    /// Equivalent to `forward(observations, zero_actions)` when `has_action == false`,
+    /// but avoids the overhead of creating dummy tensors even when actions exist.
+    pub fn forward_no_action(
+        &self,
+        observations: Tensor<B, 3>,
+    ) -> (Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>) {
+        let z = self.encode(observations);
+        let u = self.fusion.forward(z.clone());
         let predicted_z = self.ssm.forward(u);
 
         let reconstructed_x = self.decode(z.clone());
@@ -427,13 +574,25 @@ impl<B: Backend> MultiScaleLatentPredictor<B> {
         action: Tensor<B, 2>,
         state: MultiScaleState<B>,
     ) -> (Tensor<B, 2>, MultiScaleState<B>) {
-        let a = self.action_encoder.forward(action.unsqueeze_dim::<3>(1));
-        let [batch, _seq, d_model] = a.dims();
-        let a = a.reshape([batch, d_model]);
+        let u = if let Some(ref ae) = self.action_encoder {
+            let a = ae.forward(action.unsqueeze_dim::<3>(1));
+            let [batch, _seq, d_model] = a.dims();
+            let a = a.reshape([batch, d_model]);
+            let u_concat = Tensor::cat(vec![z_prev, a], 1);
+            self.fusion.forward(u_concat)
+        } else {
+            self.fusion.forward(z_prev)
+        };
+        self.ssm.forward_step(u, &state)
+    }
 
-        let u_concat = Tensor::cat(vec![z_prev, a], 1);
-        let u = self.fusion.forward(u_concat);
-
+    /// Autoregressive step without action (unsupervised mode).
+    pub fn step_no_action(
+        &self,
+        z_prev: Tensor<B, 2>,
+        state: MultiScaleState<B>,
+    ) -> (Tensor<B, 2>, MultiScaleState<B>) {
+        let u = self.fusion.forward(z_prev);
         self.ssm.forward_step(u, &state)
     }
 

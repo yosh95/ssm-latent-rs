@@ -14,6 +14,7 @@ use burn::module::Module;
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
+use rand::RngExt;
 
 /// Mutable state for single-layer autoregressive streaming inference.
 #[derive(Clone)]
@@ -441,20 +442,9 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
         let mut state = self.zero_state(batch, &observations.device());
         let mut predictions = Vec::with_capacity(seq_len);
 
-        // For sampling: use a simple deterministic threshold based on position
-        // (avoids needing RNG in tensor code; in production, use a proper RNG)
-        let use_h_at = |t: usize| -> bool {
-            if t == 0 {
-                return false; // first step always uses observation
-            }
-            // Deterministic pattern that approximates the target probability
-            // e.g. prob=0.3 → use h every 3rd step after the first
-            if h_sampling_prob >= 1.0 {
-                return true;
-            }
-            let period = (1.0 / h_sampling_prob).round() as usize;
-            t.is_multiple_of(period)
-        };
+        // #4: Bernoulli sampling instead of deterministic periodic pattern.
+        // This prevents bias toward specific phase positions.
+        let mut rng = rand::rng();
 
         for t in 0..seq_len {
             let obs_dim = observations.dims()[2];
@@ -470,7 +460,10 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
             let obs_enc = self.obs_proj.forward(obs_t); // [batch, d_model]
 
             // Decide whether to use h-derived input or observation-derived input
-            let input_enc = if use_h_at(t) {
+            // Bernoulli(p): first step always observation; subsequent steps sampled
+            let use_h = t > 0 && rng.random_bool(h_sampling_prob.clamp(0.0, 1.0));
+
+            let input_enc = if use_h {
                 // Use hidden state from previous step
                 let h_last = state.ssms.h[self.n_layers - 1].clone();
                 let [b, nh, ds, dhm] = h_last.dims();
