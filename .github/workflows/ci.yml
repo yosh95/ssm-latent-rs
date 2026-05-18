@@ -12,8 +12,9 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # ─── Format ──────────────────────────────────────────────────────────
   fmt:
-    name: Format check
+    name: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,8 +23,9 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # ─── Clippy ──────────────────────────────────────────────────────────
   clippy:
-    name: Clippy
+    name: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,8 +35,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # ─── Tests (Linux + macOS) ───────────────────────────────────────────
   test:
-    name: Test (${{ matrix.os }})
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -46,17 +49,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets --all-features
 
+  # ─── Tests (Windows) ─────────────────────────────────────────────────
   test-windows:
-    name: Test (windows-latest)
+    name: test (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Single-thread to avoid WGPU device contention on Windows runners
       - run: cargo test --all-targets --all-features -- --test-threads=1
 
+  # ─── Release build (workspace) ───────────────────────────────────────
+  build:
+    name: build (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release
+
+  # ─── Docs ────────────────────────────────────────────────────────────
   docs:
-    name: Docs
+    name: docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,3 +81,17 @@ jobs:
       - run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  # ─── WASM build ──────────────────────────────────────────────────────
+  wasm-build:
+    name: wasm-pack build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: jetli/wasm-pack-action@v0.4
+      - run: wasm-pack build game-playing-wasm --target web
+      - run: wasm-pack build metronome-demo --target web

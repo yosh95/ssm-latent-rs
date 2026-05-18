@@ -1,5 +1,10 @@
 # ssm-latent-model
 
+[![CI](https://github.com/yosh95/ssm-latent-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/yosh95/ssm-latent-rs/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml/badge.svg)](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.87%2B-blue.svg)](https://www.rust-lang.org)
+
 A Rust-based exploration of **Latent World Models**, drawing inspiration from recent advances in State Space Models (SSM) and Joint-Embedding Predictive Architecture (JEPA).
 
 ![Cicle Demo](images/circle_demo.gif)

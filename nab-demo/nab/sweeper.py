@@ -307,6 +307,9 @@ class Sweeper(object):
       prevRow = thresholdScore
 
     # Return sweepScore for each row, to be added to score file
+    if matchingRow is None:
+        total = len(timestamps)
+        matchingRow = ThresholdScore(threshold, 0.0, 0, total, 0, 0, total)
     return (
       [x.sweepScore for x in anomalyList],
       matchingRow

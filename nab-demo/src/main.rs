@@ -213,18 +213,17 @@ fn find_csv_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<(),
 
 // ─── Anomaly score calibration: triple-signal with independent normalization ──
 
-/// Convert three raw error streams to anomaly scores.
+/// Convert three raw error streams to anomaly scores in [0, 1].
 ///
-/// Each signal stream is **independently** calibrated using MAD from the probation
-/// period, then combined with configurable weights. The output is a raw anomaly
-/// score (unbounded z-score), NOT a [0,1] probability. NAB's optimizer handles
-/// threshold selection itself.
+/// Each signal is independently calibrated via MAD from the probation period,
+/// then combined with configurable weights and normalized to [0, 1]. NAB's
+/// optimizer expects scores in this range for threshold scanning.
 ///
 /// Pipeline:
-///   1. Calibrate each signal on probation: median, MAD
-///   2. Per-point: z_i = |error_i - median| / MAD  (robust z-score)
-///   3. Combine: score[t] = α·z_recon[t] + β·z_latent[t] + γ·z_obs[t]
-///   4. Output raw score (no percentile, no power — NAB thresholder does its job)
+///   1. Calibrate each signal on probation: median, MAD (with floor)
+///   2. Per-point: z_i = |error_i - median| / MAD, clamped to [0, 1000]
+///   3. Combine: raw[t] = α·z_recon[t] + β·z_latent[t] + γ·z_obs[t]
+///   4. Normalize to [0, 1]: score = raw / (α+β+γ)·1000
 fn triple_signal_to_scores(
     recon: &[f32],
     latent: &[f32],
@@ -236,35 +235,47 @@ fn triple_signal_to_scores(
     let n = recon.len();
     let cal_len = probation_len.min(n);
     let (alpha_recon, beta_latent, gamma_obs) = weights;
+    let weight_sum = (alpha_recon + beta_latent + gamma_obs) as f32;
+    // Theoretical max: each signal clamped to 1000, combined with weights.
+    // score = (α*1000 + β*1000 + γ*1000) / (sum*1000) = 1.0
+    let norm_scale = weight_sum * 1000.0;
 
     // ── Calibrate each signal independently on probation period ──
     let (med_r, mad_r) = calc_mad_robust(&recon[..cal_len]);
     let (med_l, mad_l) = calc_mad_robust(&latent[..cal_len]);
     let (med_o, mad_o) = calc_mad_robust(&obs_pred[..cal_len]);
 
-    // ── Compute robust z-scores for the full sequence ──
+    // ── Compute robust z-scores, combine, normalize to [0, 1] ──
     (0..n)
         .map(|i| {
-            let zr = ((recon[i] - med_r).abs() / mad_r) as f64;
-            let zl = ((latent[i] - med_l).abs() / mad_l) as f64;
-            let zo = ((obs_pred[i] - med_o).abs() / mad_o) as f64;
-            (alpha_recon * zr + beta_latent * zl + gamma_obs * zo) as f32
+            let zr = ((recon[i] - med_r).abs() / mad_r).max(0.0).min(1000.0);
+            let zl = ((latent[i] - med_l).abs() / mad_l).max(0.0).min(1000.0);
+            let zo = ((obs_pred[i] - med_o).abs() / mad_o).max(0.0).min(1000.0);
+            let raw =
+                (alpha_recon as f32) * zr + (beta_latent as f32) * zl + (gamma_obs as f32) * zo;
+            (raw / norm_scale).min(1.0)
         })
         .collect()
 }
 
-/// Compute median and MAD (with consistency factor 1.4826) for a slice.
+/// Compute median and robust MAD. MAD has a floor of 1e-4 to prevent
+/// z-score explosion when the calibration period is nearly constant.
 fn calc_mad_robust(data: &[f32]) -> (f32, f32) {
     let n = data.len();
     if n == 0 {
-        return (0.0, 1e-6);
+        return (0.0, 1.0);
     }
     let mut sorted = data.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let med = sorted[n / 2];
     let mut abs_devs: Vec<f32> = data.iter().map(|x| (x - med).abs()).collect();
     abs_devs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mad = (abs_devs[n / 2] * 1.4826).max(1e-6);
+    let raw_mad = abs_devs[n / 2] * 1.4826;
+    // Floor: if the calibration data range is non-trivial, use 1% of range;
+    // otherwise use absolute floor of 1e-4.
+    let data_range = sorted[n - 1] - sorted[0];
+    let floor = (data_range * 0.01).max(1e-4);
+    let mad = raw_mad.max(floor);
     (med, mad)
 }
 
@@ -513,6 +524,41 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         println!("  Training done: best_loss={best_loss:.6}");
+
+        // ── Fallback: if training diverged (sparse/categorical data like
+        //     rogue_agent_key or Twitter volume), output zero anomaly scores
+        //     rather than garbage that breaks the NAB optimizer. ──
+        if best_loss > 1e9 {
+            println!(
+                "  {}Training diverged — outputting all-zero scores{}",
+                YELLOW, RESET
+            );
+            std::fs::create_dir_all(&result_dir)?;
+            let mut wtr = csv::Writer::from_path(&final_result_path)?;
+            wtr.write_record([
+                "timestamp",
+                "value",
+                "anomaly_score",
+                "recon_err_raw",
+                "latent_pred_err_raw",
+                "obs_pred_err_raw",
+            ])?;
+            for i in 0..raw_records.len() {
+                wtr.write_record([
+                    &raw_records[i].timestamp,
+                    &raw_values[i].to_string(),
+                    "0.0",
+                    "0.0",
+                    "0.0",
+                    "0.0",
+                ])?;
+            }
+            println!(
+                "  {}Saved (zeroed){} {}/{} ({} points, train={})",
+                GREEN, RESET, category, filename, seq_len, train_len_aligned
+            );
+            continue;
+        }
 
         // ── JEPA streaming inference with triple-signal anomaly scoring ──
         let model: MultiScaleLatentPredictor<InnerBackend> = model.valid();
