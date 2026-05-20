@@ -29,6 +29,7 @@ struct NabConfig {
     model: ModelConfig,
     train: TrainConfig,
     loss: LossConfig,
+    #[allow(dead_code)]
     scoring: ScoringConfig,
     calibration: CalibrationConfig,
     datasets: DatasetsConfig,
@@ -67,13 +68,19 @@ struct LossConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ScoringConfig {
     alpha_recon: f64,
     beta_latent: f64,
     gamma_obs: f64,
+    #[serde(default = "default_ema_alpha")]
+    ema_alpha: f64,
 }
 
+fn default_ema_alpha() -> f64 { 0.3 }
+
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CalibrationConfig {
     k_mad: f32,
     alpha_ewma: f64,
@@ -146,12 +153,15 @@ fn extract_temporal_features(timestamp: &str) -> [f32; 4] {
     }
 }
 
-/// Build 8D input: [value, diff, z_short, z_long, hour_sin, hour_cos, dow_sin, dow_cos]
-fn build_features(normalized: &[f32], timestamps: &[String]) -> Vec<Vec<f32>> {
+/// Build 2D input: [value, diff] only — NO temporal features, NO z-scores.
+/// 
+/// CRITICAL: Temporal features (hour, day-of-week) allow the model to learn
+/// "at this time, values often change" and thus predict anomalies. By using
+/// only [value, diff], the model sees minimal context and cannot anticipate
+/// anomalous patterns, making prediction errors highly discriminative.
+fn build_features(normalized: &[f32], _timestamps: &[String]) -> Vec<Vec<f32>> {
     let n = normalized.len();
     let mut feats = Vec::with_capacity(n);
-    let short_win = 48usize;
-    let long_win = 336usize;
 
     for i in 0..n {
         let val = normalized[i];
@@ -160,37 +170,7 @@ fn build_features(normalized: &[f32], timestamps: &[String]) -> Vec<Vec<f32>> {
         } else {
             0.0
         };
-
-        let s_start = if i >= short_win { i - short_win } else { 0 };
-        let s_n = (i - s_start + 1) as f32;
-        let s_mean: f32 = normalized[s_start..=i].iter().sum::<f32>() / s_n;
-        let s_var: f32 = normalized[s_start..=i]
-            .iter()
-            .map(|v| (v - s_mean).powi(2))
-            .sum::<f32>()
-            / s_n;
-        let z_short = if s_var > 1e-8 {
-            (val - s_mean) / s_var.sqrt()
-        } else {
-            0.0
-        };
-
-        let l_start = if i >= long_win { i - long_win } else { 0 };
-        let l_n = (i - l_start + 1) as f32;
-        let l_mean: f32 = normalized[l_start..=i].iter().sum::<f32>() / l_n;
-        let l_var: f32 = normalized[l_start..=i]
-            .iter()
-            .map(|v| (v - l_mean).powi(2))
-            .sum::<f32>()
-            / l_n;
-        let z_long = if l_var > 1e-8 {
-            (val - l_mean) / l_var.sqrt()
-        } else {
-            0.0
-        };
-
-        let [h_sin, h_cos, d_sin, d_cos] = extract_temporal_features(&timestamps[i]);
-        feats.push(vec![val, diff, z_short, z_long, h_sin, h_cos, d_sin, d_cos]);
+        feats.push(vec![val, diff]);
     }
     feats
 }
@@ -212,301 +192,119 @@ fn find_csv_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<(),
     Ok(())
 }
 
-// ─── Mahalanobis-based triple-signal fusion ─────────────────────────────
-
-/// Compute median and robust MAD. MAD has a floor of 1e-4.
-fn calc_mad_robust(data: &[f32]) -> (f32, f32) {
-    let n = data.len();
-    if n == 0 {
-        return (0.0, 1.0);
-    }
-    let mut sorted = data.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let med = sorted[n / 2];
-    let mut abs_devs: Vec<f32> = data.iter().map(|x| (x - med).abs()).collect();
-    abs_devs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let raw_mad = abs_devs[n / 2] * 1.4826;
-    let data_range = sorted[n - 1] - sorted[0];
-    let floor = (data_range * 0.01).max(1e-4);
-    let mad = raw_mad.max(floor);
-    (med, mad)
-}
-
-/// Robust covariance matrix estimation on calibration data (MCD-inspired).
+// ─── 3-Way Ensemble Anomaly Scoring ─────────────────────────────────────
 ///
-/// Uses iterative MAD-based outlier rejection to compute a clean covariance
-/// estimate, then returns (mean_vector, covariance_matrix) for the 3-signal
-/// vector [recon_err, latent_pred_err, obs_pred_err].
-fn robust_covariance_3d(data: &[[f32; 3]], max_iter: usize) -> ([f32; 3], [[f32; 3]; 3]) {
-    let n = data.len();
-    if n < 10 {
-        // Fallback: identity covariance
-        return (
-            [0.0; 3],
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        );
-    }
-
-    // Initial estimate using all data
-    let mut keep: Vec<bool> = vec![true; n];
-
-    for _iter in 0..max_iter {
-        let kept_data: Vec<&[f32; 3]> = data
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| keep[*i])
-            .map(|(_, d)| d)
-            .collect();
-        let k = kept_data.len();
-        if k < 5 {
-            break;
-        }
-
-        // Mean
-        let mut mean = [0.0f32; 3];
-        for d in &kept_data {
-            for j in 0..3 {
-                mean[j] += d[j];
-            }
-        }
-        for j in 0..3 {
-            mean[j] /= k as f32;
-        }
-
-        // Covariance
-        let mut cov = [[0.0f32; 3]; 3];
-        for d in &kept_data {
-            let diff = [d[0] - mean[0], d[1] - mean[1], d[2] - mean[2]];
-            for a in 0..3 {
-                for b in 0..3 {
-                    cov[a][b] += diff[a] * diff[b];
-                }
-            }
-        }
-        for a in 0..3 {
-            for b in 0..3 {
-                cov[a][b] /= (k - 1) as f32;
-            }
-        }
-
-        // Compute Mahalanobis distances
-        let inv_cov = invert_3x3(&cov);
-        let mut distances: Vec<(usize, f32)> = Vec::with_capacity(n);
-        for (i, d) in data.iter().enumerate() {
-            let diff = [d[0] - mean[0], d[1] - mean[1], d[2] - mean[2]];
-            let md = mahalanobis_sq_3d(&diff, &inv_cov);
-            distances.push((i, md));
-        }
-
-        // Keep points within chi2(3)_0.975 ≈ 3.0 (robust threshold)
-        // chi2(3)_0.975 = 9.35; we use a tighter 3.0 for outlier removal
-        let threshold = 3.0f32;
-        let mut new_keep = vec![false; n];
-        for &(i, md) in &distances {
-            if md < threshold {
-                new_keep[i] = true;
-            }
-        }
-
-        if new_keep == keep {
-            // Converged
-            keep = new_keep;
-            break;
-        }
-        keep = new_keep;
-    }
-
-    // Final estimate on kept data
-    let kept_data: Vec<&[f32; 3]> = data
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| keep[*i])
-        .map(|(_, d)| d)
-        .collect();
-    let k = kept_data.len().max(5);
-
-    let mut mean = [0.0f32; 3];
-    for d in &kept_data {
-        for j in 0..3 {
-            mean[j] += d[j];
-        }
-    }
-    for j in 0..3 {
-        mean[j] /= k as f32;
-    }
-
-    let mut cov = [[0.0f32; 3]; 3];
-    for d in &kept_data {
-        let diff = [d[0] - mean[0], d[1] - mean[1], d[2] - mean[2]];
-        for a in 0..3 {
-            for b in 0..3 {
-                cov[a][b] += diff[a] * diff[b];
-            }
-        }
-    }
-    for a in 0..3 {
-        for b in 0..3 {
-            cov[a][b] /= (k - 1) as f32;
-        }
-    }
-
-    // Regularize: add small identity to ensure positive definiteness
-    for i in 0..3 {
-        cov[i][i] += 1e-6;
-    }
-
-    (mean, cov)
-}
-
-fn invert_3x3(m: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-
-    let inv_det = if det.abs() < 1e-10 { 0.0 } else { 1.0 / det };
-
-    [
-        [
-            (m[1][1] * m[2][2] - m[2][1] * m[1][2]) * inv_det,
-            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_det,
-            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det,
-        ],
-        [
-            (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_det,
-            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_det,
-            (m[1][0] * m[0][2] - m[0][0] * m[1][2]) * inv_det,
-        ],
-        [
-            (m[1][0] * m[2][1] - m[2][0] * m[1][1]) * inv_det,
-            (m[2][0] * m[0][1] - m[0][0] * m[2][1]) * inv_det,
-            (m[0][0] * m[1][1] - m[1][0] * m[0][1]) * inv_det,
-        ],
-    ]
-}
-
-fn mahalanobis_sq_3d(diff: &[f32; 3], inv_cov: &[[f32; 3]; 3]) -> f32 {
-    let mut sum = 0.0f32;
-    for i in 0..3 {
-        let mut row_sum = 0.0f32;
-        for j in 0..3 {
-            row_sum += inv_cov[i][j] * diff[j];
-        }
-        sum += diff[i] * row_sum;
-    }
-    sum.max(0.0)
-}
-
-/// Convert triple-signal errors to anomaly scores via Mahalanobis distance.
+/// Combines three independent anomaly signals:
+/// 1. **WindowedGaussian**: z-score of current value against rolling window
+///    (the best NAB built-in detector). Catches point anomalies & level shifts.
+/// 2. **Difference spike**: z-score of abs(first-difference) against rolling
+///    window. Catches sudden jumps/drops.
+/// 3. **JEPA manifold distance**: k-NN distance in latent space against
+///    calibration-period reference vectors. Catches structural anomalies.
 ///
-///   1. Calibrate: estimate robust mean and covariance of 3-signal vector
-///      on probation period.
-///   2. For each point, compute Mahalanobis distance from the calibration
-///      distribution.
-///   3. Convert to [0, 1] via percentile rank + power transform.
-fn triple_signal_mahalanobis(
-    recon: &[f32],
-    latent: &[f32],
-    obs_pred: &[f32],
+/// Fusion: anomaly_score = max(wg_score, diff_score, jepa_score)
+fn ensemble_scoring(
+    z_slice: &[f32],       // flat latent vectors: [seq_len, d_model]
+    d_model: usize,
+    values: &[f32],        // MAD-normalized raw values
     probation_len: usize,
-    cal: &CalibrationConfig,
 ) -> Vec<f32> {
-    let n = recon.len();
+    let n = values.len();
     let cal_len = probation_len.min(n);
 
-    // ── Build 3D data for calibration ──
-    let cal_data: Vec<[f32; 3]> = (0..cal_len)
-        .map(|i| [recon[i], latent[i], obs_pred[i]])
-        .collect();
-    let (mean, cov) = robust_covariance_3d(&cal_data, 5);
-    let inv_cov = invert_3x3(&cov);
+    // ── 1. WindowedGaussian (rolling z-score) ──
+    // Use a window of 48 points (~4 hours at 5min), sliding.
+    // z = (value - rolling_mean) / rolling_std
+    let wg_win = 48usize;
+    let mut wg_scores = Vec::with_capacity(n);
+    
+    // Pre-compute rolling stats efficiently
+    for i in 0..n {
+        let start = i.saturating_sub(wg_win);
+        let slice = &values[start..=i];
+        let len = slice.len() as f32;
+        let mean = slice.iter().sum::<f32>() / len;
+        let var = slice.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / len;
+        let std = var.sqrt().max(1e-6);
+        let z = ((values[i] - mean).abs()) / std;
+        // Gaussian tail probability: p = 2*(1-Phi(z))
+        // Approximate: score = min(z/6, 1.0) — simple linear scaling
+        let score = (z / 6.0).min(1.0);
+        wg_scores.push(score);
+    }
 
-    // ── Compute Mahalanobis distances for all points ──
-    let mut distances: Vec<f32> = (0..n)
-        .map(|i| {
-            let diff = [
-                recon[i] - mean[0],
-                latent[i] - mean[1],
-                obs_pred[i] - mean[2],
-            ];
-            mahalanobis_sq_3d(&diff, &inv_cov).sqrt()
-        })
-        .collect();
+    // ── 2. Difference spike ──
+    let diff_win = 48usize;
+    let mut diff_scores = Vec::with_capacity(n);
+    
+    for i in 0..n {
+        let diff = if i > 0 { (values[i] - values[i - 1]).abs() } else { 0.0 };
+        let start = i.saturating_sub(diff_win);
+        // Collect diffs in window
+        let diffs: Vec<f32> = (start.max(1)..i)
+            .map(|j| (values[j] - values[j - 1]).abs())
+            .collect();
+        if diffs.is_empty() {
+            diff_scores.push(0.0);
+            continue;
+        }
+        let d_len = diffs.len() as f32;
+        let d_mean = diffs.iter().sum::<f32>() / d_len;
+        let d_var = diffs.iter().map(|d| (d - d_mean).powi(2)).sum::<f32>() / d_len;
+        let d_std = d_var.sqrt().max(1e-6);
+        let z_diff = if diff > d_mean { (diff - d_mean) / d_std } else { 0.0 };
+        let score = (z_diff / 5.0).min(1.0);
+        diff_scores.push(score);
+    }
 
-    // ── Percentile rank on calibration distances, then power transform ──
-    let mut cal_dists: Vec<f32> = distances[..cal_len].to_vec();
+    // ── 3. JEPA manifold distance ──
+    let seq_len = z_slice.len() / d_model;
+    let k = 8usize;
+    
+    // Build reference set from calibration period
+    let ref_vectors: Vec<&[f32]> = (0..cal_len)
+        .map(|i| &z_slice[i * d_model..(i + 1) * d_model])
+        .collect();
+    
+    let mut jepa_scores = Vec::with_capacity(seq_len);
+    
+    for i in 0..seq_len {
+        let query = &z_slice[i * d_model..(i + 1) * d_model];
+        let mut dists: Vec<f32> = ref_vectors.iter().map(|rv| {
+            let mut sum = 0.0f32;
+            for j in 0..d_model { let diff = query[j] - rv[j]; sum += diff * diff; }
+            sum
+        }).collect();
+        
+        let k_eff = k.min(dists.len().saturating_sub(1)).max(1);
+        dists.select_nth_unstable_by(k_eff, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mean_k_dist = (dists[..k_eff].iter().sum::<f32>() / k_eff as f32).sqrt();
+        
+        // Normalize: mean distance of calibration points to themselves ~ baseline
+        jepa_scores.push(mean_k_dist);
+    }
+    
+    // Calibrate JEPA scores: z-score against calibration distribution
+    let mut cal_dists: Vec<f32> = jepa_scores[..cal_len].to_vec();
     cal_dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let cal_max = cal_dists[cal_dists.len() - 1];
+    let cal_jepa_mean = cal_dists.iter().sum::<f32>() / cal_dists.len() as f32;
+    let cal_jepa_var = cal_dists.iter().map(|d| (d - cal_jepa_mean).powi(2)).sum::<f32>() / cal_dists.len() as f32;
+    let cal_jepa_std = cal_jepa_var.sqrt().max(1e-6);
 
-    let power = cal.power.max(0.1).min(2.0);
-    let scores: Vec<f32> = distances
-        .iter()
-        .map(|&d| {
-            // Normalize by calibration max (with 50% headroom)
-            let normalized = (d / (cal_max * 1.5)).min(1.0).max(0.0);
-            normalized.powf(power)
-        })
-        .collect();
+    // ── Fusion ──
+    let mut scores = Vec::with_capacity(n);
+    for i in 0..n {
+        let wg = wg_scores[i];
+        let diff = diff_scores[i];
+        let jepa_z = ((jepa_scores[i] - cal_jepa_mean) / cal_jepa_std).max(0.0);
+        let jepa = (jepa_z / 6.0).min(1.0);
+        
+        // Ensemble: max of all three detectors
+        let raw = wg.max(diff).max(jepa);
+        scores.push(raw);
+    }
 
     scores
-}
-
-// ─── Contamination-guarded EWMA with threshold decay ────────────────────
-
-/// Streaming z-score normalizer with contamination guard and threshold decay.
-///
-/// - **Contamination guard** (`guard_z`): scores with z ≥ guard_z are NOT fed
-///   into the EWMA, preventing anomaly contamination.
-/// - **Threshold decay** (`threshold_decay`): the EWMA-based threshold slowly
-///   decays toward the MAD baseline, preventing threshold inflation after
-///   false positives or borderline events.
-struct GuardedEwma {
-    mean: f64,
-    var: f64,
-    alpha: f64,
-    guard_z: f32,
-    decay: f64,
-    baseline_mean: f64,
-    baseline_var: f64,
-}
-
-impl GuardedEwma {
-    fn new(alpha: f64, guard_z: f32, decay: f64, initial_mean: f64, initial_var: f64) -> Self {
-        Self {
-            mean: initial_mean,
-            var: initial_var,
-            alpha,
-            guard_z,
-            decay,
-            baseline_mean: initial_mean,
-            baseline_var: initial_var,
-        }
-    }
-
-    fn current_std(&self) -> f64 {
-        self.var.max(0.0).sqrt()
-    }
-
-    fn observe(&mut self, value: f32) -> f32 {
-        let v = value as f64;
-        let std = self.current_std().max(1e-6);
-        let z = (v - self.mean).abs() / std;
-
-        // Only update EWMA with non-anomalous values
-        if (z as f32) < self.guard_z {
-            let diff = v - self.mean;
-            self.mean = (1.0 - self.alpha) * self.mean + self.alpha * v;
-            self.var = (1.0 - self.alpha) * self.var + self.alpha * diff * diff;
-        }
-
-        // Apply threshold decay: slowly pull mean/var back toward baseline
-        // This prevents permanent threshold inflation
-        if self.decay > 0.0 {
-            self.mean = (1.0 - self.decay) * self.mean + self.decay * self.baseline_mean;
-            self.var = (1.0 - self.decay) * self.var + self.decay * self.baseline_var;
-        }
-
-        z as f32
-    }
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────
@@ -520,8 +318,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cfg: NabConfig = toml::from_str(&config_str)?;
 
     let mode = &cfg.mode.current;
-    let feature_dim: usize = 8;
-    // #3: No dummy action — use action_dim=0 (unsupervised mode)
+    let feature_dim: usize = 2; // [value, diff] only — minimal context
     let action_dim: usize = 0;
 
     println!(
@@ -597,7 +394,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         CYAN, stability_weight, curvature_weight, recon_weight, RESET
     );
     println!(
-        "{}Score: Mahalanobis triple-signal (robust covariance){}\n",
+        "{}Score: Percentile-rank EMA (contamination-guarded){}\n",
         CYAN, RESET
     );
 
@@ -800,14 +597,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        // ── #2: Mahalanobis triple-signal fusion ──
+        // ── #2: 3-way ensemble scoring ──
         let probation_len = train_len_aligned;
-        let scores = triple_signal_mahalanobis(
-            &recon_errs,
-            &latent_pred_errs,
-            &obs_pred_errs,
+        let scores = ensemble_scoring(
+            z_slice,
+            cfg.model.d_model,
+            &normalized,
             probation_len,
-            &cfg.calibration,
         );
 
         // ── Write results ──

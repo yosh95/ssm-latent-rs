@@ -2,15 +2,15 @@
   "ssm_latent_jepa": {
     "standard": {
       "threshold": 1.1,
-      "score": -116.0
+      "score": -7.0
     },
     "reward_low_FP_rate": {
       "threshold": 1.1,
-      "score": -116.0
+      "score": -7.0
     },
     "reward_low_FN_rate": {
       "threshold": 1.1,
-      "score": -232.0
+      "score": -14.0
     }
   }
 }

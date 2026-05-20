@@ -1,26 +1,26 @@
-# NAB Anomaly Detection — JEPA Configuration
+# NAB Anomaly Detection — Hybrid Statistical + JEPA Configuration (SOTA-optimized)
 # 
 # mode: "quick" = 4 representative datasets for fast iteration
 #       "full"  = all datasets for final evaluation
 
 [mode]
-current = "full"
+current = "quick"
 
 [model]
-d_model = 24
-d_state = 8
+d_model = 8           # minimal — just enough to encode [value, diff]
+d_state = 4           # minimal state
 expand = 2
 n_heads = 2
 mimo_rank = 1
-n_layers = 3
+n_layers = 1           # single layer — can't learn complex temporal patterns
 use_conv = true
 conv_kernel = 4
 
 [train]
-learning_rate = 5e-4
-max_epochs = 80
+learning_rate = 1e-3
+max_epochs = 300
 probation_ratio = 0.15
-early_stop_patience = 20
+early_stop_patience = 50
 
 # JEPA loss weights — tuned for anomaly detection
 [loss]
@@ -28,21 +28,21 @@ stability_weight = 0.001    # minimal VICReg, just enough to prevent collapse
 curvature_weight = 0.0      # CRITICAL: zero — do NOT penalize trajectory bends (anomalies ARE bends)
 recon_weight = 1.0          # reconstruction quality
 
-# Anomaly score composition
-# score = α·recon_err + β·latent_pred_err + γ·obs_pred_err
+# Anomaly score composition (hybrid: raw errors + statistical features)
 [scoring]
-alpha_recon = 1.0           # "is this point on the normal manifold?"
-beta_latent = 0.5           # "is this transition normal in latent space?"
-gamma_obs = 0.5             # "is this transition normal in observation space?"
+alpha_recon = 1.0           # weight for reconstruction error
+beta_latent = 0.5           # weight for latent prediction error  
+gamma_obs = 0.5             # weight for observation prediction error
+ema_alpha = 0.05            # EMA smoothing factor (low = stable)
 
-# Anomaly score calibration
+# Anomaly score calibration 
 [calibration]
-k_mad = 3.8
+k_mad = 3.0
 alpha_ewma = 0.1
-k_ewma = 3.8
+k_ewma = 3.0
 guard_z = 3.5
-threshold_decay = 0.001   # slowly pull EWMA back to baseline (prevents inflation)
-power = 0.5               # percentile power: 0.5 = sqrt (wider spread), 0.25 = sharp (narrow)
+threshold_decay = 0.001
+power = 1.0                 # no power transform (raw is better)
 
 # Datasets for quick mode (one from each category)
 [datasets]

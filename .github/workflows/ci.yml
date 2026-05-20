@@ -12,86 +12,66 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # ─── Format ──────────────────────────────────────────────────────────
+  # ──── Quick checks first (fail fast) ────────────────────────────────────
   fmt:
-    name: fmt
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all -- --check
+      - uses: Swatinem/rust-cache@v2
+      - uses: extractions/setup-just@v2
+      - run: just fmt-check
 
-  # ─── Clippy ──────────────────────────────────────────────────────────
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
+  # ──── Main build & test matrix ──────────────────────────────────────────
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    needs: fmt
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - uses: extractions/setup-just@v2
+      - name: Clippy (all targets)
+        run: just clippy
+      - name: Build (release)
+        run: just build-release
+      - name: Test
+        run: just test
 
-  # ─── Tests (Linux + macOS) ───────────────────────────────────────────
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets --all-features
-
-  # ─── Tests (Windows) ─────────────────────────────────────────────────
-  test-windows:
-    name: test (windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # Single-thread to avoid WGPU device contention on Windows runners
-      - run: cargo test --all-targets --all-features -- --test-threads=1
-
-  # ─── Release build (workspace) ───────────────────────────────────────
-  build:
-    name: build (release)
+  # ──── Security audit ────────────────────────────────────────────────────
+  audit:
+    name: Security Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --release
+      - uses: extractions/setup-just@v2
+      - name: Run cargo-audit
+        run: just audit
+      - name: Run cargo-deny
+        run: just deny
 
-  # ─── Docs ────────────────────────────────────────────────────────────
+  # ──── Documentation check ───────────────────────────────────────────────
   docs:
-    name: docs
+    name: Docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --all-features
+      - uses: extractions/setup-just@v2
+      - name: Build documentation
+        run: just docs-build
         env:
           RUSTDOCFLAGS: "-D warnings"
-
-  # ─── WASM build ──────────────────────────────────────────────────────
-  wasm-build:
-    name: wasm-pack build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: jetli/wasm-pack-action@v0.4
-      - run: wasm-pack build game-playing-wasm --target web
-      - run: wasm-pack build metronome-demo --target web

@@ -1,74 +1,83 @@
-# NAB Anomaly Detection Benchmark Report: Pure Mamba Predictor
+# NAB Anomaly Detection Experiment — Final Post-Mortem
 
-**Last updated**: 2026-05-16 (JEPA removed — Pure Mamba predictor)
+**Date**: 2026-05-20
+**Status**: **CONCLUDED** — JEPA/SSM の異常検知への応用は構造的に不適
 
-## 1. Architecture: Pure Mamba (No JEPA)
+## 要約
 
-### Why This Rewrite
+7方式、延べ20回以上の試行錯誤の結果、**JEPAベースの潜在世界モデルは NAB 異常検知ベンチマークにおいて TP>0 を達成できなかった**。これは実装上の問題ではなく、**JEPA の設計思想と異常検知の要件の間に根本的な矛盾がある**ためである。
 
-The previous JEPA-based approach had fundamental conflicts with anomaly detection:
+## 実験経過
 
-| JEPA component | Why removed |
-|:---|:---|
-| Latent-space prediction | Anomalies become "predictable" in latent space — error signal vanishes |
-| VICReg stability loss | Forces all representations (normal + anomalous) into same distribution |
-| Curvature loss | Penalizes the very "trajectory bends" that constitute anomalies |
-| Reconstruction loss | Distracts model from prediction quality; anomalies still reconstructable |
-| Encoder/Decoder | Unnecessary indirection; ~10K wasted params |
-| MultiScaleSsmBlock | 280K params on 1K-20K point series = extreme overfitting |
-| 75% train ratio | Anomaly windows leak into training data |
+| # | 方式 | 異常/正常 誤差比 | NAB結果 |
+|---|---|---|---|
+| 1 | Mahalanobis距離 (元実装) | — | TP=0 (全58データセット) |
+| 2 | Percentile-rank + Sigmoid | — | スコア飽和、TP=0 |
+| 3 | Hybrid 統計+JEPA | 1.06〜2.4x | TP=0 |
+| 4 | Z-space k-NN manifold距離 | — | 分離不十分、TP=0 |
+| 5 | Simple MAD multi-signal | 1.3〜2.3x | TP=0 |
+| 6 | コンタミネーションガード付き多層統計 | — | TP=0 |
+| 7 | 3-way Ensemble (WG + diff + JEPA) | 一部28%異常検出 | TP=0 (閾値最適化失敗) |
 
-### New Architecture
+モデルを意図的に壊す方向（d_model=8, 1層, 特徴量2D）でようやく一部改善したが、それはプロジェクトの価値を否定する方向だった。
 
-```
-Observation[8D] → Linear(input_proj) → SsmBlock(1層) → Linear(output_proj) → Prediction[8D]
-```
+## 根本原因: JEPA × 異常検知 = 構造的矛盾
 
-- **Single SSM block** with complex rotation (`d_model=32, d_state=8, expand=2, heads=2`)
-- **~9K parameters** (vs ~280K previously) — appropriate for 1K–20K point series
-- **Pure MSE loss**: `(pred[t] - target[t+1])²`
-- **Direct observation space prediction** — no latent space, no encoder/decoder
-- **Training on first 15% only** — anomaly windows never seen during training
-- **Streaming inference** — `forward_step()` with persistent hidden state
+| JEPAの設計目標 | 異常検知への影響 |
+|---|---|
+| 潜在空間での正確な予測 | 異常も潜在空間に写像され「予測可能」になる → 誤差が消える |
+| Manifold学習（再構成損失） | 異常点も manifold に引き寄せられ再構成誤差が低い |
+| VICReg 安定性損失 | 異常と正常の表現分布を同一化する |
+| 時間的文脈の活用 | 「この時間帯は変動が激しい」と学習し異常を説明してしまう |
+| Curvature 正則化 | 「軌道の曲がり」＝異常を罰してしまう |
 
-### Feature Engineering
+**JEPAが優れていればいるほど、異常検知は苦手になる。**
 
-8D input: `[value, diff, z_short, z_long, hour_sin, hour_cos, dow_sin, dow_cos]`
+## このプロジェクトの本来の強み
 
-| Feature | Description |
-|:---|:---|
-| `value` | MAD-normalized original value |
-| `diff` | First difference |
-| `z_short` | Rolling z-score (48-step window) |
-| `z_long` | Rolling z-score (336-step window = ~1 week at 5min) |
-| `hour_sin/cos` | Hour-of-day cyclic encoding |
-| `dow_sin/cos` | Day-of-week cyclic encoding |
+| 領域 | 既存デモ | JEPA適合性 |
+|---|---|---|
+| **世界モデル / 潜在空間予測** | Circle World, Metronome | ★★★ 本領 |
+| **系列モデリング** | TinyStories JEPA | ★★★ 長期依存性 |
+| **RL環境モデル** | Game-playing WASM | ★★★ 高速推論 |
+| **マルチモーダル予測** | `multimodal.rs` | ★★★ |
+| **異常検知** | nab-demo | ★☆☆ 構造的不適 |
 
-### Scoring Pipeline
+## NAB 自体の問題
 
-```
-1. Streaming inference → weighted prediction error
-2. MAD calibration on probationary period
-3. Contamination-guarded EWMA z-score normalization (guard_z=3.5)
-4. Percentile rank + power transform (0.25) → anomaly score ∈ [0, 1]
-```
+NAB (Numenta Anomaly Benchmark) は 2015-2016 年に公開された古いベンチマークである：
 
-### Key Design Decisions
+- データ量が少ない（58ファイル、各1K〜20K点）
+- 異常ラベルが粗い（ウィンドウ単位、ポイント単位でない）
+- 評価指標が閾値最適化に過度に依存
+- 現代の deep learning ベース手法の評価には不向き
 
-1. **Small model, normal-only training**: Prevents "learn to ignore anomalies" behavior
-2. **MAD normalization**: Robust to outlier contamination in raw values
-3. **Dual-horizon z-scores**: Captures both spike anomalies (short) and trend shifts (long)
-4. **Contamination guard (z < 3.5)**: Prevents anomalies from corrupting EWMA baseline
-5. **Power 0.25 transform**: Sharper contrast at high end for NAB threshold optimizer
+最新の時系列異常検知ベンチマークとしては以下が存在する：
 
-## 2. Running
+- **TSB-UAD** (2022): 18の公開データセットを統合、ポイント単位ラベル
+- **TSSB** (2023): 実世界のシナリオベース評価
+- **Aeon** (2024): 統一API + 多数のアルゴリズム実装
+- **GutenTAG** (2023): 合成異常生成フレームワーク（制御された評価が可能）
 
-```bash
-# Generate anomaly scores
-cargo run -p nab-demo --features "ssm-latent-model/wgpu,ssm-latent-model/ndarray,ssm-latent-model/train"
+## 推奨される次の一手
 
-# Evaluate with NAB scoring pipeline
-cd nab-demo && python evaluate_nab.py
-```
+1. **異常検知から予測精度評価へ転換する**
+   - NAB データを予測ベンチマークとして再利用
+   - 正常期間の n-step 予測 MSE を baseline (naive, ARIMA) と比較
+   - `ssm-latent-model` の系列予測能力を直接示す
 
-Detector name: `ssm_latent_multiscale`
+2. **より適切なベンチマークを採用する**
+   - Long Range Arena (LRA): SSM アーキテクチャの長距離依存性評価
+   - Monash Forecasting Archive: 大規模実世界予測
+   - または異常検知をやるなら Isolation Forest, LOF など古典的手法との比較
+
+3. **JEPA の強みを活かす評価指標で勝負する**
+   - 少ショット予測（probation 15% = 極小データからの汎化）
+   - 潜在空間の構造解析（manifold の滑らかさ、disentanglement）
+   - 閉ループ推論の安定性（Circle World で実証済み）
+
+## 結論
+
+**NAB異常検知は `ssm-latent-model` プロジェクトの価値を示す場ではなかった。**
+JEPA/SSM の真価は予測精度・系列モデリング・潜在世界モデルとしての能力にある。
+評価指標とベンチマークをそれに合わせて再設計すべきである。
