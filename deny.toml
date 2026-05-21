@@ -30,8 +30,6 @@ allow = [
   "Unlicense",
   "Zlib",
 ]
-copyleft = "deny"
-default = "deny"
 
 [bans]
 multiple-versions = "warn"
