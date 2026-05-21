@@ -4,10 +4,36 @@
 [![Security Audit](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml/badge.svg)](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.87%2B-blue.svg)](https://www.rust-lang.org)
+<!-- TODO: Replace with actual DOI after Zenodo issues it -->
+<!-- [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX) -->
 
 A Rust ([Burn](https://burn.dev/)) implementation of **Mamba-3** (Lahoti et al., ICLR 2026) integrated with **Joint-Embedding Predictive Architecture (JEPA)** for latent world modeling.
 
 ![Circle Demo](images/circle_demo.gif)
+
+## 🔬 Key Finding: Multi-Scale SSM × JEPA Phase Locking
+
+Circle-world is a deceptively simple test: predict (x, y) coordinates of a point
+moving at constant angular velocity, 20 steps into the future.
+
+| Configuration | 20-step prediction | Why? |
+|---|---|---|
+| **Mamba-only** (single-scale SSM, observation space) | ❌ Phase drift, converges to wrong quadrant | SSM models raw (x,y) directly — nonlinear circular dynamics exceed single-scale capacity |
+| **JEPA-only** (single SSM + latent space) | ⚠️ Partial phase drift | Latent space helps, but single timescale cannot simultaneously track fast angular velocity and slow full-cycle period |
+| **Multi-Scale SSM + JEPA** (this work) | ✅ Accurate phase-locked prediction | Three SSM layers (fast/medium/slow decay) decompose dynamics across frequency bands; JEPA's latent space lets SSM operate on the *essential representation* of the circle rather than raw coordinates |
+
+**Neither component alone succeeds.  The two are structurally complementary.**
+
+The multi-scale SSM stack initializes each layer with different decay ranges
+(`a_re ∈ [-1.0, -0.3]`, `[-0.3, -0.05]`, `[-0.05, -0.005]`), enabling implicit
+frequency decomposition without explicit Fourier features.  JEPA's encoder
+projects observations into a latent space where the SSM predicts dynamics,
+and the decoder maps back — the SSM never touches raw (x, y) during prediction.
+
+This combination is, to our knowledge, **absent from the JEPA literature**
+(all published JEPA models use Transformer backbones) and from the SSM
+literature (SSMs are benchmarked on next-token prediction, not latent-space
+world modeling).
 
 ### 🧬 Mamba-3: Three Core Innovations (all implemented)
 

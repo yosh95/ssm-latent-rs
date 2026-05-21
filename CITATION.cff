@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - given-names: Yoshihiro
+    family-names: Ando
+    alias: yosh95
+title: "SSM Latent World Model — Mamba-3 × JEPA"
+abstract: "A Rust (Burn) implementation of Mamba-3 State Space Models integrated with Joint-Embedding Predictive Architecture (JEPA) for latent world modeling. Features multi-scale SSM stacks, SIGReg collapse prevention, and demonstrates that multi-scale SSM + JEPA achieves phase-locked long-horizon prediction of periodic dynamics where either component alone fails."
+version: 0.1.0
+date-released: 2026-05-21
+repository-code: "https://github.com/yosh95/ssm-latent-rs"
+license: MIT
+keywords:
+  - state-space-models
+  - jepa
+  - mamba
+  - world-model
+  - rust
+  - burn
+  - latent-prediction
+  - sigreg
