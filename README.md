@@ -4,7 +4,7 @@
 [![Security Audit](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml/badge.svg)](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.87%2B-blue.svg)](https://www.rust-lang.org)
-[![DOI](https://zenodo.org/badge/1215576954.svg)](https://doi.org/10.5281/zenodo.20324811)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20324812.svg)](https://doi.org/10.5281/zenodo.20324812)
 
 A Rust ([Burn](https://burn.dev/)) implementation of **Mamba-3** (Lahoti et al., ICLR 2026) integrated with **Joint-Embedding Predictive Architecture (JEPA)** for latent world modeling.
 
