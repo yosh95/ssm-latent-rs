@@ -1,6 +1,8 @@
 use burn::backend::NdArray;
 use burn::tensor::{Tensor, TensorData};
-use ssm_latent_model::latent::{LatentPredictor, curvature_loss, stability_loss};
+use ssm_latent_model::latent::{
+    LatentPredictor, curvature_loss, lejepa_loss, sigreg_loss, stability_loss,
+};
 use ssm_latent_model::preprocess::normalize_projections;
 use ssm_latent_model::ssm::SsmConfig;
 
@@ -28,6 +30,51 @@ fn test_stability_loss_prevents_collapse() {
         loss_collapsed.into_data().as_slice::<f32>().unwrap()[0]
             > loss_ideal.into_data().as_slice::<f32>().unwrap()[0]
     );
+}
+
+#[test]
+fn test_sigreg_loss_prevents_collapse() {
+    type B = NdArray<f32>;
+    let device = Default::default();
+    let freqs = &[0.5, 1.0, 1.5, 2.0];
+
+    let w = Tensor::<B, 2>::random([16, 8], burn::tensor::Distribution::Default, &device);
+    let w = normalize_projections(w);
+
+    // Collapsed representation
+    let z_collapsed = Tensor::<B, 3>::zeros([1, 10, 16], &device);
+    let loss_collapsed = sigreg_loss(z_collapsed, w.clone(), freqs);
+
+    // Near-ideal representation (standard normal)
+    let z_ideal = Tensor::<B, 3>::random(
+        [1, 100, 16],
+        burn::tensor::Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+    let loss_ideal = sigreg_loss(z_ideal, w, freqs);
+
+    assert!(
+        loss_collapsed.into_data().as_slice::<f32>().unwrap()[0]
+            > loss_ideal.into_data().as_slice::<f32>().unwrap()[0],
+        "SIGReg should penalise collapsed embeddings more than normal-distributed ones"
+    );
+}
+
+#[test]
+fn test_lejepa_loss_finite() {
+    type B = NdArray<f32>;
+    let device = Default::default();
+
+    let z = Tensor::<B, 3>::random([2, 16, 32], burn::tensor::Distribution::Normal(0.0, 1.0), &device);
+    let pred_z = Tensor::<B, 3>::random([2, 16, 32], burn::tensor::Distribution::Normal(0.0, 1.0), &device);
+
+    let w = Tensor::<B, 2>::random([32, 8], burn::tensor::Distribution::Default, &device);
+    let w = normalize_projections(w);
+
+    let loss = lejepa_loss(z, pred_z, w, 1.0, &[0.5, 1.0, 1.5]);
+    let val = loss.into_data().as_slice::<f32>().unwrap()[0];
+
+    assert!(val.is_finite() && val >= 0.0, "LeJEPA loss must be finite and non-negative, got {val}");
 }
 
 #[test]

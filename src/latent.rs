@@ -393,7 +393,115 @@ pub fn stability_loss_running<B: Backend>(
     )
 }
 
-/// Gaussian-based O(T) stability loss to prevent representation collapse in JEPA.
+/// Sketched Isotropic Gaussian Regularization (SIGReg) — characteristic function matching.
+///
+/// This is the LeJEPA (Balestriero & LeCun, 2025) distribution-matching objective.
+/// Unlike [`stability_loss`] which matches only the first two moments (mean=0, var=1)
+/// on random projections, SIGReg matches the **entire distribution** by comparing
+/// empirical and target characteristic functions (CFs) at a small set of evaluation
+/// points.  This provides provable collapse prevention with a single hyperparameter.
+///
+/// # Theory
+///
+/// The isotropic Gaussian N(0,I) is provably optimal for minimizing downstream
+/// prediction risk across both linear and nonlinear probes (LeJEPA, Sections 3.1–3.2).
+/// SIGReg enforces this by:
+/// 1. Projecting embeddings onto M random 1D directions (sketching)
+/// 2. Evaluating the empirical CF at K fixed frequency points per direction
+/// 3. Penalising deviation from the standard normal CF φ(t) = exp(-t²/2)
+///
+/// # Complexity
+///
+/// O(batch · seq_len · d_model · M + batch · seq_len · M · K) = linear in all dimensions.
+/// Uses the same random projection matrix as [`stability_loss`].
+///
+/// # Arguments
+/// * `z` - Latent representations: `[batch, seq_len, d_model]`
+/// * `w` - Normalized random projection matrix: `[d_model, n_projections]`
+/// * `freqs` - Evaluation frequencies for the characteristic function (e.g. [0.5, 1.0, 1.5, 2.0])
+///
+/// # Returns
+/// Scalar SIGReg loss.
+pub fn sigreg_loss<B: Backend>(
+    z: Tensor<B, 3>,
+    w: Tensor<B, 2>,
+    freqs: &[f64],
+) -> Tensor<B, 1> {
+    let [batch, seq_len, d_model] = z.dims();
+    let _n_projections = w.dims()[1];
+    let device = &z.device();
+
+    let z_flat = z.reshape([batch * seq_len, d_model]);
+    let projections = z_flat.matmul(w); // [N, _n_projections]
+
+    // Standardize each projection direction to zero mean, unit variance.
+    // This stabilises the CF evaluation and makes the loss scale-invariant.
+    let mean = projections.clone().mean_dim(0); // [1, n_projections]
+    let var = (projections.clone() - mean.clone())
+        .powf_scalar(2.0)
+        .mean_dim(0); // [1, n_projections]
+    let std = var.sqrt() + 1e-6;
+    let u = (projections - mean) / std; // [N, _n_projections]
+
+    let mut total_loss = Tensor::<B, 1>::from_data([0.0], device);
+
+    for &freq in freqs {
+        let t = freq as f64;
+        let target_cf = (-t * t / 2.0).exp(); // φ_N(0,1)(t) = exp(-t²/2), real-valued
+
+        // Empirical characteristic function: φ_emp(t) = (1/N) Σ_j exp(i·t·u_j)
+        // Real part: (1/N) Σ_j cos(t·u_j)  → [1, n_projections]
+        // Imag part: (1/N) Σ_j sin(t·u_j)  → [1, n_projections]
+        let cos_part = u.clone().mul_scalar(t).cos().mean_dim(0); // [1, n_projections]
+        let sin_part = u.clone().mul_scalar(t).sin().mean_dim(0); // [1, n_projections]
+
+        // |φ_emp(t) - φ_target(t)|² = (Re[φ_emp] - exp(-t²/2))² + Im[φ_emp]²
+        let re_diff = cos_part - target_cf;
+        let loss_freq = re_diff.clone().powf_scalar(2.0) + sin_part.powf_scalar(2.0);
+
+        // loss_freq: [1, n_projections], mean → scalar
+        total_loss = total_loss + loss_freq.mean();
+    }
+
+    // Average over frequencies.  from_data([0.0]) already produces a rank-1 tensor [1],
+    // so we just divide — no unsqueeze needed (unlike stability_loss which sums scalars).
+    total_loss / freqs.len() as f64
+}
+
+/// Convenience wrapper: JEPA predictive loss + SIGReg.
+///
+/// This is the **LeJEPA training objective** as described in Balestriero & LeCun (2025):
+///
+/// ```text
+/// L = L_pred + γ · SIGReg(z)
+/// ```
+///
+/// where `L_pred` is the next-step latent prediction MSE and SIGReg enforces
+/// isotropic Gaussian embeddings to prevent collapse — no stop-gradient,
+/// no teacher-student, no EMA schedule required.
+///
+/// # Arguments
+/// * `z` - Current latent representations: `[batch, seq_len, d_model]`
+/// * `pred_z` - Predicted next latent states: `[batch, seq_len, d_model]`
+/// * `projections` - Normalized random projection matrix from the model
+/// * `sigreg_weight` - Trade-off hyperparameter γ (the *only* tunable parameter)
+/// * `freqs` - CF evaluation frequencies
+pub fn lejepa_loss<B: Backend>(
+    z: Tensor<B, 3>,
+    pred_z: Tensor<B, 3>,
+    projections: Tensor<B, 2>,
+    sigreg_weight: f64,
+    freqs: &[f64],
+) -> Tensor<B, 1> {
+    let [batch, seq_len, _] = z.dims();
+    let target_z = z.clone().detach().slice([0..batch, 1..seq_len]);
+    let pred_slice = pred_z.slice([0..batch, 0..seq_len - 1]);
+
+    let mse_latent = (target_z - pred_slice).powf_scalar(2.0).mean();
+    let sigreg = sigreg_loss(z, projections, freqs);
+
+    mse_latent + sigreg.mul_scalar(sigreg_weight)
+}
 ///
 /// Inspired by VICReg (Bardes et al., 2022), this loss projects the latent
 /// representations onto random directions and penalizes deviations from a

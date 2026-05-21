@@ -16,6 +16,12 @@ stability_weight = 1.0
 curvature_weight = 0.5
 recon_weight = 1.0
 
+# LeJEPA / SIGReg (Balestriero & LeCun, 2025)
+# sigreg_weight replaces stability_weight when using lejepa_loss.
+# Freqs are the characteristic function evaluation points.
+sigreg_weight = 1.0
+sigreg_freqs = [0.5, 1.0, 1.5, 2.0]
+
 [anomaly]
 k_mad = 3.0
 alpha_ewma = 0.1

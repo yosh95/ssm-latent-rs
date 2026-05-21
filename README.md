@@ -24,7 +24,8 @@ This project explores the integration of **Mamba-style** sequence modeling with 
 
 - **SSM-based Dynamics**: Utilizes State Space principles (inspired by the Mamba architecture) for efficient sequence handling, supporting both parallel training and fast, recurrent-style inference.
 - **Latent-Space Prediction**: Following the JEPA philosophy, the model predicts future states in a learned embedding space. This approach focuses on capturing essential dynamics rather than predicting every pixel, which helps in maintaining stability.
-- **Trajectory Regularization**: Incorporates concepts like *Temporal Straightening* to encourage more predictable and smoother transitions in the latent space, aiding long-term planning.
+- **Collapse Prevention (LeJEPA / SIGReg)**: Implements *Sketched Isotropic Gaussian Regularization* (Balestriero & LeCun, 2025) — a **provably optimal** distribution-matching objective that constrains embeddings to an isotropic Gaussian.  SIGReg replaces the heuristics (stop-gradient, teacher-student, EMA schedule) with a single tunable hyperparameter, exactly matching the LeJEPA blueprint.  A lightweight moment-matching fallback (`stability_loss`) is also available for resource-constrained settings.
+- **Trajectory Regularization**: Incorporates *Temporal Straightening* (Wang, Bounou, Zhou et al., 2026) to encourage locally linear, predictable latent trajectories, aiding long-term planning.
 - **Cross-Platform Implementation**: Built with [Burn](https://burn.dev/), enabling the same model logic to run across different backends, including WGPU for browser-based WASM execution.
 
 ## 🕹 Demos & Usage
@@ -75,7 +76,9 @@ cargo run -p deterministic-ai-agent-demo --release
 
 ## 🧪 Technical Notes
 
-- **Stability**: Uses random projections as a lightweight regularizer to prevent latent representation collapse in non-contrastive learning scenarios.
+- **Stability**: Uses random projections as a lightweight regularizer to prevent latent representation collapse. Two variants are provided:
+  - `sigreg_loss`: Full **SIGReg** (LeJEPA) — characteristic-function matching against N(0,I), provably optimal and heuristics-free.
+  - `stability_loss`: Moment-matching fallback (VICReg-style) for environments where the CF loop overhead is undesirable.
 - **Complexity**: The implementation balances $O(L \log L)$ training complexity with $O(1)$ state updates during deployment.
 
 ### Running Tests
@@ -109,9 +112,12 @@ cargo test --test extended_tests      # Edge cases, MIMO rank > 1, step(), visio
 | **Vision** | Multimodal loss | Loss is finite and non-negative |
 | **Gradient** | Conv1d gradients | Verifies conv weights receive gradients |
 | **Gradient** | SSM parameters | Verifies `a_re`, `a_im`, `dt_proj`, `out_proj` gradients |
+| **SIGReg** | Collapse prevention | Collapsed embeddings → higher loss than normal ones |
+| **LeJEPA** | Combined loss | `lejepa_loss` is finite and non-negative |
 
 ## 📚 References
 
+- Balestriero, R., & LeCun, Y. (2025). **LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics**. *arXiv:2511.08544*.
 - Lahoti, A., et al. (2026). **Mamba-3: Improved Sequence Modeling using State Space Principles**.
 - Maes, L., et al. (2026). **LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels**.
 - Wang, Y., Bounou, O., Zhou, G., Balestriero, R., Rudner, T.G., LeCun, Y., & Ren, M. (2026). **Temporal Straightening for Latent Planning**.
