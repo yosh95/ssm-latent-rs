@@ -240,10 +240,12 @@ pub struct MultiScaleState<B: Backend> {
 
 /// Configuration for the SSM (State Space Model) block.
 ///
-/// This implements a Mamba-style selective state space model with complex rotation
-/// dynamics. The architecture follows the design principles of:
-/// - **Mamba** (Gu & Dao, 2023): Selective scan with input-dependent parameters
-/// - **Mamba-3** (Lahoti et al., 2026): Complex rotation in state space with MIMO rank
+/// This implements a **Mamba-3** style selective state space model (Lahoti et al., ICLR 2026)
+/// with three core innovations:
+/// - **Exponential-trapezoidal discretization**: 3-term recurrence (α, β, γ)
+///   `h_t = α_t·h_{t-1} + β_t·B_{t-1}·x_{t-1} + γ_t·B_t·x_t`
+/// - **Complex-valued SSM** with data-dependent RoPE for state tracking
+/// - **MIMO** (multi-input multi-output) for better hardware utilization
 ///
 /// # Key parameters
 /// - `d_model`: Model dimension (input/output)
@@ -251,7 +253,8 @@ pub struct MultiScaleState<B: Backend> {
 /// - `expand`: Inner dimension multiplier; `d_inner = d_model * expand`
 /// - `n_heads`: Number of attention heads; `d_inner` must be divisible by `n_heads`
 /// - `mimo_rank`: Multi-input multi-output rank; each head outputs `mimo_rank` values
-/// - `use_conv`: Whether to apply causal 1D convolution for local context
+/// - `use_conv`: Whether to apply causal 1D convolution for local context (default: false).
+///   Mamba-3 shows this is unnecessary when exponential-trapezoidal + B,C biases are used (§4.2).
 /// - `conv_kernel`: Kernel size for the causal convolution
 ///
 /// # Constraints
@@ -265,7 +268,7 @@ pub struct SsmConfig {
     pub expand: usize,
     pub n_heads: usize,
     pub mimo_rank: usize,
-    #[config(default = true)]
+    #[config(default = false)]
     pub use_conv: bool,
     #[config(default = 4)]
     pub conv_kernel: usize,
@@ -343,16 +346,23 @@ impl SsmConfig {
     }
 }
 
-/// A selective state space model block with complex rotation dynamics.
+/// A selective state space model block with complex rotation dynamics
+/// and exponential-trapezoidal discretization.
 ///
-/// This block implements the core SSM computation following Mamba-style architecture:
+/// This block implements the core SSM computation following **Mamba-3**
+/// (Lahoti et al., ICLR 2026) architecture:
 /// 1. Input projection splits into two branches: the main branch (u) and an evolution gate (evo_gate)
-/// 2. Causal 1D convolution captures local context (optional)
+/// 2. Causal 1D convolution captures local context (optional; made redundant by exp-trap + B,C biases)
 /// 3. SiLU activation produces the input to the selective scan
 /// 4. Input-dependent parameters (delta, lambda, theta, B, C) are computed via projections
-/// 5. Selective scan applies complex rotation state-space dynamics
-/// 6. Residual connection with learnable skip (D parameter)
-/// 7. RMSNorm and gated output projection (SwiGLU-style gating)
+/// 5. BCNorm (QK normalization) stabilizes B and C projections
+/// 6. **Exponential-trapezoidal discretization**: 3-term recurrence
+///    `h_t = α_t·h_{t-1} + β_t·B_{t-1}·x_{t-1} + γ_t·B_t·x_t`
+///    where the λ_t gate controls the convex combination of interval endpoints
+/// 7. **Complex-valued SSM** via data-dependent RoPE on hidden state rotation
+/// 8. **MIMO** (multi-input multi-output) formulation via `mimo_rank`
+/// 9. Residual connection with learnable skip (D parameter)
+/// 10. RMSNorm and gated output projection (SwiGLU-style gating)
 ///
 /// # Parallel vs Sequential modes
 /// - [`forward()`](Self::forward): Parallel scan for O(L log L) training
@@ -363,13 +373,16 @@ impl SsmConfig {
 pub struct SsmBlock<B: Backend> {
     /// Input projection: maps `d_model` → `2 * d_inner` (split into u and evo_gate)
     pub in_proj: Linear<B>,
-    /// Causal 1D convolution for local context aggregation (optional)
+    /// Causal 1D convolution for local context aggregation (optional;
+    /// Mamba-3 shows this is unnecessary when exponential-trapezoidal + B,C biases are used)
     pub conv1d: Option<Conv1d<B>>,
     /// Output projection: maps `d_inner` → `d_model`
     pub out_proj: Linear<B>,
     /// Projects SiLU-activated input to step size (delta) per head: `d_inner` → `n_heads`
     pub dt_proj: Linear<B>,
-    /// Projects SiLU-activated input to decay gate (lambda) per head: `d_inner` → `n_heads`
+    /// Projects SiLU-activated input to trapezoidal gate (lambda) per head: `d_inner` → `n_heads`
+    /// λ_t ∈ [0,1] controls the convex combination in exponential-trapezoidal discretization:
+    /// λ_t=1 → exponential-Euler (Mamba-2), λ_t=0.5 → classical trapezoidal, learned → Mamba-3
     pub lambda_proj: Linear<B>,
     /// Projects SiLU-activated input to rotation angles (theta) per head: `d_inner` → `n_heads * (d_state/2)`
     pub theta_proj: Linear<B>,
@@ -377,7 +390,13 @@ pub struct SsmBlock<B: Backend> {
     pub b_proj: Linear<B>,
     /// Projects SiLU-activated input to C matrix output: `d_inner` → `n_heads * mimo_rank * d_state`
     pub c_proj: Linear<B>,
+    /// BCNorm (QK normalization): RMSNorm applied to B after projection, before bias.
+    /// Mirrors QKNorm in modern Transformers; stabilizes large-scale training (Mamba-3 §3.4).
+    pub b_norm: RmsNorm<B>,
+    /// BCNorm (QK normalization): RMSNorm applied to C after projection, before bias.
+    pub c_norm: RmsNorm<B>,
     /// Bias term for B input projection: shape `[n_heads, mimo_rank, d_state]`
+    /// Added after BCNorm; together with exp-trap makes short convolution optional (Mamba-3 §4.2).
     pub b_bias: Param<Tensor<B, 3>>,
     /// Bias term for C output projection: shape `[n_heads, mimo_rank, d_state]`
     pub c_bias: Param<Tensor<B, 3>>,
@@ -385,7 +404,8 @@ pub struct SsmBlock<B: Backend> {
     /// Initialized uniformly in [-1.0, -0.1] to ensure damping (exponential decay)
     pub a_re: Param<Tensor<B, 2>>,
     /// Imaginary part of diagonal state transition matrix A: shape `[n_heads, d_state]`
-    /// Initialized uniformly in [0, 2π] to enable complex rotation dynamics
+    /// Initialized uniformly in [0, 2π] to enable complex rotation dynamics.
+    /// Together with `theta` projection, this implements data-dependent RoPE (Mamba-3 Prop. 3).
     pub a_im: Param<Tensor<B, 2>>,
     /// Skip connection parameter D: shape `[d_inner]`
     /// Enables direct input-to-output pathway (D-skip in SSM formulation)
@@ -398,7 +418,7 @@ pub struct SsmBlock<B: Backend> {
     pub d_state: usize,
     /// Number of attention heads
     pub n_heads: usize,
-    /// Multi-input multi-output rank
+    /// Multi-input multi-output rank (Mamba-3 MIMO formulation)
     pub mimo_rank: usize,
 }
 
@@ -457,6 +477,13 @@ impl<B: Backend> SsmBlock<B> {
         let b_bias = Tensor::zeros([n_heads, mimo_rank, d_state], device);
         let c_bias = Tensor::zeros([n_heads, mimo_rank, d_state], device);
 
+        // BCNorm (QK normalization): RMSNorm applied per-head on B and C projections.
+        // Normalizes each head's projection to unit variance before bias addition.
+        // Mamba-3 §3.4: BCNorm stabilizes large-scale training and enables removal of
+        // the post-gate RMSNorm in pure Mamba-3 models.
+        let b_norm = RmsNormConfig::new(n_heads * mimo_rank * d_state).init(device);
+        let c_norm = RmsNormConfig::new(n_heads * mimo_rank * d_state).init(device);
+
         // State transition matrix initialization:
         // - a_re (real part): initialized in [-1.0, -0.1] to ensure damping.
         //   Values near -1.0 produce rapid decay (stable but potentially too fast),
@@ -489,6 +516,8 @@ impl<B: Backend> SsmBlock<B> {
             theta_proj,
             b_proj,
             c_proj,
+            b_norm,
+            c_norm,
             b_bias: Param::from_tensor(b_bias),
             c_bias: Param::from_tensor(c_bias),
             a_re: Param::from_tensor(a_re),
@@ -550,27 +579,29 @@ impl<B: Backend> SsmBlock<B> {
 
     /// Selective scan using complex state-space dynamics and parallel scan.
     ///
-    /// Implements the core SSM recurrence with input-dependent parameters:
+    /// Implements the **Mamba-3 exponential-trapezoidal recurrence** (Lahoti et al., ICLR 2026, Prop. 1):
     ///
     /// ```text
-    /// h_t = (λ_t · Δ_t) · B_t · u_t + (1 - λ_t) · Δ_t · h_{t-1} · A_t + β_t
-    /// y_t = C_t · h_t
+    /// h_t = exp(Δ_t·A_t) · h_{t-1}                     // state decay (α_t)
+    ///     + (1-λ_t)·Δ_t·exp(Δ_t·A_t) · B_{t-1}·x_{t-1} // previous input (β_t)
+    ///     + λ_t·Δ_t · B_t·x_t                            // current input (γ_t)
+    /// y_t = C_t^T · h_t
     /// ```
     ///
     /// where:
-    /// - `A_t = exp(a_re · Δ_t) · R(θ_t)` is the complex rotation state transition
-    /// - `Δ_t` (delta) is the input-dependent step size
-    /// - `λ_t` (lambda) is the input-dependent exponential gate controlling
-    ///   the balance between new information and recurrent state
-    /// - `θ_t` (theta) is the input-dependent rotation angle
-    /// - `β_t` incorporates the previous timestep's input with decay
+    /// - `A_t = a_re + i·a_im` is the complex diagonal state transition
+    /// - `Δ_t = softplus(dt_proj(u_t))` is the input-dependent step size
+    /// - `λ_t = sigmoid(lambda_proj(u_t))` is the trapezoidal gate:
+    ///   λ_t=1 → exponential-Euler (Mamba-2), λ_t=0.5 → classical trapezoidal,
+    ///   learned → Mamba-3 generalized trapezoidal
+    /// - `θ_t` (theta) is the data-dependent rotation angle for complex SSM (data-dependent RoPE)
     ///
     /// The computation uses a parallel prefix scan for O(L log L) complexity.
     ///
     /// # Arguments
     /// * `u` - SiLU-activated input: `[batch, seq_len, d_inner]`
     /// * `delta` - Step size per head: `[batch, seq_len, n_heads]`
-    /// * `lambda` - Decay gate per head: `[batch, seq_len, n_heads]`
+    /// * `lambda` - Trapezoidal gate per head: `[batch, seq_len, n_heads]`
     /// * `theta` - Rotation angles per head: `[batch, seq_len, n_heads * (d_state/2)]`
     /// * `b` - Input-dependent B matrix: `[batch, seq_len, n_heads * mimo_rank * d_state]`
     /// * `c` - Input-dependent C matrix: `[batch, seq_len, n_heads * mimo_rank * d_state]`
@@ -590,6 +621,8 @@ impl<B: Backend> SsmBlock<B> {
 
         let u_mimo = u.reshape([batch, seq_len, n_heads, mimo_rank, d_head_mimo]);
 
+        let b = b.reshape([batch, seq_len, n_heads * mimo_rank * d_state]);
+        let b = self.b_norm.forward(b); // BCNorm: QK normalization (Mamba-3 §3.4)
         let b = b.reshape([batch, seq_len, n_heads, mimo_rank, d_state])
             + self
                 .b_bias
@@ -597,6 +630,8 @@ impl<B: Backend> SsmBlock<B> {
                 .unsqueeze_dim::<4>(0)
                 .unsqueeze_dim::<5>(0);
 
+        let c = c.reshape([batch, seq_len, n_heads * mimo_rank * d_state]);
+        let c = self.c_norm.forward(c); // BCNorm: QK normalization (Mamba-3 §3.4)
         let c = c.reshape([batch, seq_len, n_heads, mimo_rank, d_state])
             + self
                 .c_bias
@@ -823,13 +858,17 @@ impl<B: Backend> SsmBlock<B> {
         let u_mimo = u_silu
             .clone()
             .reshape([batch, n_heads, mimo_rank, d_head / mimo_rank]);
-        let current_bx = (self
-            .b_proj
-            .forward(u_silu.clone())
-            .reshape([batch, n_heads, mimo_rank, d_state])
-            + self.b_bias.val().unsqueeze_dim::<4>(0))
-        .swap_dims(2, 3)
-        .matmul(u_mimo);
+        let current_bx = {
+            let b_flat = self
+                .b_proj
+                .forward(u_silu.clone())
+                .reshape([batch, n_heads * mimo_rank * d_state]);
+            let b_normed = self.b_norm.forward(b_flat); // BCNorm (Mamba-3 §3.4)
+            (b_normed.reshape([batch, n_heads, mimo_rank, d_state])
+                + self.b_bias.val().unsqueeze_dim::<4>(0))
+            .swap_dims(2, 3)
+            .matmul(u_mimo)
+        };
 
         let gamma_t = (dt_t.clone() * la_t.clone())
             .unsqueeze_dim::<3>(2)
@@ -845,11 +884,15 @@ impl<B: Backend> SsmBlock<B> {
         let h_next = da_re_for_h.unsqueeze_dim::<4>(3) * h_rot
             + gamma_t * current_bx.clone()
             + beta_t * prev_bx.unwrap_or_else(|| Tensor::zeros_like(&current_bx));
-        let c_rs = self
-            .c_proj
-            .forward(u_silu.clone())
-            .reshape([batch, n_heads, mimo_rank, d_state])
-            + self.c_bias.val().unsqueeze_dim::<4>(0);
+        let c_rs = {
+            let c_flat = self
+                .c_proj
+                .forward(u_silu.clone())
+                .reshape([batch, n_heads * mimo_rank * d_state]);
+            let c_normed = self.c_norm.forward(c_flat); // BCNorm (Mamba-3 §3.4)
+            c_normed.reshape([batch, n_heads, mimo_rank, d_state])
+                + self.c_bias.val().unsqueeze_dim::<4>(0)
+        };
         let y_ssm = c_rs.matmul(h_next.clone()).reshape([batch, self.d_inner]);
         let y_res = y_ssm + u_silu * self.d.val().unsqueeze_dim::<2>(0);
         let y = self.norm.forward(y_res) * burn::tensor::activation::silu(evo_gate);

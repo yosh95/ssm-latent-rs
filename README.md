@@ -1,15 +1,23 @@
-# ssm-latent-model
+# SSM Latent World Model — Mamba-3 × JEPA
 
 [![CI](https://github.com/yosh95/ssm-latent-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/yosh95/ssm-latent-rs/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml/badge.svg)](https://github.com/yosh95/ssm-latent-rs/actions/workflows/security-audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.87%2B-blue.svg)](https://www.rust-lang.org)
 
-A Rust-based exploration of **Latent World Models**, drawing inspiration from recent advances in State Space Models (SSM) and Joint-Embedding Predictive Architecture (JEPA).
+A Rust ([Burn](https://burn.dev/)) implementation of **Mamba-3** (Lahoti et al., ICLR 2026) integrated with **Joint-Embedding Predictive Architecture (JEPA)** for latent world modeling.
 
-![Cicle Demo](images/circle_demo.gif)
+![Circle Demo](images/circle_demo.gif)
 
-This project explores the integration of **Mamba-style** sequence modeling with the **JEPA** framework, aiming to build a lightweight yet robust system for future state prediction in latent space.
+### 🧬 Mamba-3: Three Core Innovations (all implemented)
+
+| Innovation | Implementation | Mamba-3 Ref |
+|---|---|---|
+| **Exponential-Trapezoidal Discretization** | `λ_t`-gated 3-term recurrence: `h_t = α_t·h_{t-1} + β_t·B_{t-1}·x_{t-1} + γ_t·B_t·x_t` | Prop. 1, Eq. 5 |
+| **Complex-Valued SSM** (data-dependent RoPE) | `a_re + i·a_im` with per-head rotation via `theta_proj` | Prop. 3–4 |
+| **MIMO** (Multi-Input Multi-Output) | `mimo_rank` parameter; matmul state updates | §3.3 |
+| **BCNorm** (QK normalization) | RMSNorm on B/C projections before bias addition | §3.4 |
+| **B/C Biases** | Head-specific learnable biases; with exp-trap, makes short conv optional | §3.4, §4.2 |
 
 ---
 
@@ -22,9 +30,10 @@ This project explores the integration of **Mamba-style** sequence modeling with 
 
 ## 🚀 Key Characteristics
 
-- **SSM-based Dynamics**: Utilizes State Space principles (inspired by the Mamba architecture) for efficient sequence handling, supporting both parallel training and fast, recurrent-style inference.
-- **Latent-Space Prediction**: Following the JEPA philosophy, the model predicts future states in a learned embedding space. This approach focuses on capturing essential dynamics rather than predicting every pixel, which helps in maintaining stability.
+- **Mamba-3 SSM Core**: Exponential-trapezoidal discretization, complex-valued state transitions (data-dependent RoPE), MIMO formulation, and BCNorm — all implemented in pure Rust/Burn. Short convolutions are **disabled by default** as exp-trap + B/C biases make them redundant (Mamba-3 §4.2).
+- **Latent-Space Prediction (JEPA)**: Following the JEPA philosophy, the model predicts future states in a learned embedding space. This approach focuses on capturing essential dynamics rather than predicting every pixel, which helps in maintaining stability.
 - **Collapse Prevention (LeJEPA / SIGReg)**: Implements *Sketched Isotropic Gaussian Regularization* (Balestriero & LeCun, 2025) — a **provably optimal** distribution-matching objective that constrains embeddings to an isotropic Gaussian.  SIGReg replaces the heuristics (stop-gradient, teacher-student, EMA schedule) with a single tunable hyperparameter, exactly matching the LeJEPA blueprint.  A lightweight moment-matching fallback (`stability_loss`) is also available for resource-constrained settings.
+- **Multi-Scale SSM Stack**: Stacked SSM layers with different timescale initializations (fast/medium/slow) for capturing patterns across multiple temporal resolutions.
 - **Trajectory Regularization**: Incorporates *Temporal Straightening* (Wang, Bounou, Zhou et al., 2026) to encourage locally linear, predictable latent trajectories, aiding long-term planning.
 - **Cross-Platform Implementation**: Built with [Burn](https://burn.dev/), enabling the same model logic to run across different backends, including WGPU for browser-based WASM execution.
 
