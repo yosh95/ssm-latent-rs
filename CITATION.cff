@@ -10,6 +10,7 @@ version: 0.1.0
 date-released: 2026-05-21
 repository-code: "https://github.com/yosh95/ssm-latent-rs"
 license: MIT
+doi: 10.5281/zenodo.20324812
 keywords:
   - state-space-models
   - jepa
