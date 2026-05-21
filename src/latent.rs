@@ -422,11 +422,7 @@ pub fn stability_loss_running<B: Backend>(
 ///
 /// # Returns
 /// Scalar SIGReg loss.
-pub fn sigreg_loss<B: Backend>(
-    z: Tensor<B, 3>,
-    w: Tensor<B, 2>,
-    freqs: &[f64],
-) -> Tensor<B, 1> {
+pub fn sigreg_loss<B: Backend>(z: Tensor<B, 3>, w: Tensor<B, 2>, freqs: &[f64]) -> Tensor<B, 1> {
     let [batch, seq_len, d_model] = z.dims();
     let _n_projections = w.dims()[1];
     let device = &z.device();
@@ -446,7 +442,7 @@ pub fn sigreg_loss<B: Backend>(
     let mut total_loss = Tensor::<B, 1>::from_data([0.0], device);
 
     for &freq in freqs {
-        let t = freq as f64;
+        let t = freq;
         let target_cf = (-t * t / 2.0).exp(); // φ_N(0,1)(t) = exp(-t²/2), real-valued
 
         // Empirical characteristic function: φ_emp(t) = (1/N) Σ_j exp(i·t·u_j)

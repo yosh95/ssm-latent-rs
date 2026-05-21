@@ -253,8 +253,5 @@ tests/
 demos/
 ├── circle-world-demo/          # 2D latent world model visualization
 ├── game-playing-wasm/          # Ball catch + metronome (browser)
-├── log-anomaly-demo/           # Semantic log anomaly detection
-├── nab-demo/                   # NAB benchmark anomaly detection
-├── tiny-stories-jepa-demo/     # JEPA on TinyStories text
-└── deterministic-ai-agent-demo/ # Industrial OT agent
+└── tiny-stories-jepa-demo/     # JEPA on TinyStories text
 ```

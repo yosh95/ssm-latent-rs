@@ -65,8 +65,16 @@ fn test_lejepa_loss_finite() {
     type B = NdArray<f32>;
     let device = Default::default();
 
-    let z = Tensor::<B, 3>::random([2, 16, 32], burn::tensor::Distribution::Normal(0.0, 1.0), &device);
-    let pred_z = Tensor::<B, 3>::random([2, 16, 32], burn::tensor::Distribution::Normal(0.0, 1.0), &device);
+    let z = Tensor::<B, 3>::random(
+        [2, 16, 32],
+        burn::tensor::Distribution::Normal(0.0, 1.0),
+        &device,
+    );
+    let pred_z = Tensor::<B, 3>::random(
+        [2, 16, 32],
+        burn::tensor::Distribution::Normal(0.0, 1.0),
+        &device,
+    );
 
     let w = Tensor::<B, 2>::random([32, 8], burn::tensor::Distribution::Default, &device);
     let w = normalize_projections(w);
@@ -74,7 +82,10 @@ fn test_lejepa_loss_finite() {
     let loss = lejepa_loss(z, pred_z, w, 1.0, &[0.5, 1.0, 1.5]);
     let val = loss.into_data().as_slice::<f32>().unwrap()[0];
 
-    assert!(val.is_finite() && val >= 0.0, "LeJEPA loss must be finite and non-negative, got {val}");
+    assert!(
+        val.is_finite() && val >= 0.0,
+        "LeJEPA loss must be finite and non-negative, got {val}"
+    );
 }
 
 #[test]

@@ -1,11 +1,7 @@
 [workspace]
 members = [
     "circle-world-demo",
-    "deterministic-ai-agent-demo",
     "game-playing-wasm",
-    "log-anomaly-demo",
-    "metronome-demo",
-    "nab-demo",
     "tiny-stories-jepa-demo",
 ]
 
@@ -42,9 +38,4 @@ autodiff = ["burn/autodiff"]
 wgpu = ["burn/wgpu"]
 train = ["burn/train"]
 ort = ["dep:ort"]
-
-[[bench]]
-name = "training_step"
-harness = false
-path = "benchmark/bench.rs"
 

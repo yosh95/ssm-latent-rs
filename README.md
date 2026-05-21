@@ -21,13 +21,6 @@ A Rust ([Burn](https://burn.dev/)) implementation of **Mamba-3** (Lahoti et al.,
 
 ---
 
-### 🎮 Ball Catch Game (WASM Demo)
-*Learning physics through observation.* This demo showcases the model's ability to approximate object trajectories and react in real-time within a browser environment.
-
-![Ball Catch Demo](images/ball_catch.gif)
-
----
-
 ## 🚀 Key Characteristics
 
 - **Mamba-3 SSM Core**: Exponential-trapezoidal discretization, complex-valued state transitions (data-dependent RoPE), MIMO formulation, and BCNorm — all implemented in pure Rust/Burn. Short convolutions are **disabled by default** as exp-trap + B/C biases make them redundant (Mamba-3 §4.2).
@@ -39,49 +32,19 @@ A Rust ([Burn](https://burn.dev/)) implementation of **Mamba-3** (Lahoti et al.,
 
 ## 🕹 Demos & Usage
 
-### 1. WebAssembly Demos (In-Browser)
+### WebAssembly Demos (In-Browser)
 These experiments run locally in your browser, performing both training and inference.
 
-![WASM Metronome Demo](images/wasm_demo.gif)
-
 - **Ball Catch Game**: A simple physics environment where the agent learns to intercept a ball.
-- **Metronome**: A task focused on synchronizing internal state with external periodic signals.
+
+![Ball Catch Demo](images/ball_catch.gif)
 
 **How to Run:**
 1. Install [Trunk](https://trunkrs.dev/): `cargo install trunk`
 2. Navigate to the desired demo (e.g., `cd game-playing-wasm`).
 3. Start the local server: `trunk serve --release`
 
-### 2. Log Anomaly Detection
-This demo showcases semantic anomaly detection in system logs. It combines **SentenceTransformer** embeddings with the **Latent SSM** to identify deviations from learned temporal patterns.
-- **Hybrid Adaptive Thresholding**: Implements a robust anomaly detection engine using Median Absolute Deviation (MAD) for calibration and Exponential Weighted Moving Average (EWMA) online tracking.
-- **Contamination Prevention**: Only normal observations update the threshold, ensuring the model remains resilient to persistent anomalies.
-- **Pre-warmed EWMA**: The EWMA is initialized with all calibration scores during construction, so the adaptive threshold is fully effective from the very first inference sample — no warmup delay.
-
-```bash
-cargo run -p log-anomaly-demo --release
-```
-![Log Anomaly Demo](images/log_demo.gif)
-
-### 3. Native Latent Visualization
-A CLI-based visualization of the model's "imagination" process.
-```bash
-cargo run --release
-```
-
 ---
-
-## 🔬 Other Experiments
-
-### Deterministic AI Agent
-A high-performance agent designed for industrial (OT) environments, focusing on reliability and determinacy.
-- **Features**: Neural intent classification, Out-of-Distribution (OOD) detection via class centroids, and hybrid (Neural + Exact Match) Named Entity Recognition (NER).
-- **Safety**: Designed to reject inputs falling outside the training distribution, ensuring predictable behavior in sensitive environments.
-- **More Info**: See the [Agent README](deterministic-ai-agent-demo/README.md).
-
-```bash
-cargo run -p deterministic-ai-agent-demo --release
-```
 
 ## 🧪 Technical Notes
 
