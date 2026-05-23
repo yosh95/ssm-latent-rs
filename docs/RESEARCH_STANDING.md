@@ -117,6 +117,30 @@ Mamba SSM (complex rotation, multi-scale) × JEPA (latent prediction)
 | No diffusion/flow-matching head (D-JEPA) | Low | Pure prediction focus; generation is a separate concern |
 | No multimodal vision-language (VL-JEPA) | Low | `multimodal.rs` handles vision+sensor+action, not text |
 
+### 2.4 Known Limitation: JEPA × Anomaly Detection
+
+**Empirically confirmed: JEPA (latent-space prediction) is ill-suited for anomaly detection.**
+
+The mechanism is structurally opposed to the task:
+
+1. **JEPA's core objective** is to learn a latent representation that discards
+   information irrelevant for prediction — it is designed to *ignore* non-essential
+   perturbations.
+2. **Anomaly detection** requires *sensitivity* to any deviation from the learned
+   steady-state distribution — precisely the information JEPA suppresses.
+3. **Multi-scale SSM** compounds this: the exponential decay of the state space
+   (`a_re < 0`) further smooths out transient spikes, and JEPA's encoder filters
+   them before they reach the SSM.
+
+**Consequence**: Mamba+JEPA excels at world modeling (Circle World phase-locked
+prediction, LeWorldModel-style tasks) but is **structurally weak at detecting
+point anomalies** in time series. For anomaly detection, use the pure Mamba
+predictor in [`predictor.rs`](../src/predictor.rs) which operates directly in
+observation space with no latent bottleneck — see Section 4.2.
+
+This finding supersedes the previously planned "NAB anomaly detection with SIGReg"
+experiment (removed below).
+
 ---
 
 ## 3. What We Changed (May 2026)
@@ -187,8 +211,10 @@ sigreg_freqs = [0.5, 1.0, 1.5, 2.0]
   4. WASM/edge deployment capability.
 - [ ] **Ablation study**: multi-scale vs single-scale SSM, SIGReg vs stability_loss,
   h-loop vs d_model-loop, scheduled sampling vs teacher forcing.
-- [ ] **NAB anomaly detection with SIGReg**: compare `stability_loss_running` vs
-  SIGReg-based training on the existing log-anomaly and NAB demos.
+- [ ] **NAB anomaly detection with pure Mamba predictor**: benchmark
+  [`MambaPredictor`](../src/predictor.rs) (observation-space, no JEPA) on NAB
+  datasets. This validates the structural finding that JEPA's latent filtering
+  is antithetical to point anomaly detection (see §2.4).
 
 ### 4.3 Medium-term (3–6 months)
 
