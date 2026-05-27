@@ -10,14 +10,10 @@ fn main() {
     println!();
     println!("  Native demos:");
     println!("    cargo run -p circle-world-demo --release");
-    println!("    cargo run -p log-anomaly-demo --release");
-    println!("    cargo run -p deterministic-ai-agent-demo --release");
-    println!("    cargo run -p nab-demo --release");
     println!("    cargo run -p tiny-stories-jepa-demo --release");
     println!();
     println!("  WASM demos (requires trunk):");
     println!("    cd game-playing-wasm && trunk serve --release");
-    println!("    cd metronome-demo && trunk serve --release");
     println!();
     println!("  Benchmarks:");
     println!("    cargo bench");

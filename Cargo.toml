@@ -25,7 +25,7 @@ rand = { version = "0.10", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 thiserror = { version = "2", default-features = false }
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
-tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"], optional = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
@@ -38,5 +38,5 @@ ndarray = ["std", "burn/ndarray"]
 autodiff = ["burn/autodiff"]
 wgpu = ["burn/wgpu"]
 train = ["burn/train"]
-ort = ["dep:ort"]
+ort = ["dep:ort", "dep:tokenizers"]
 

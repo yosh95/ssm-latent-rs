@@ -118,9 +118,11 @@ impl<B: Backend> MultiScaleSsmBlock<B> {
                 device,
             );
 
-            // Override a_re with layer-specific initialization
+            // Override a_re with layer-specific initialization.
+            // Shape `[n_heads, d_state/2]` — the full damping matrix `[n_heads, d_state]`
+            // is constructed on-the-fly in selective_scan by doubling along dimension 1.
             block.a_re = Param::from_tensor(Tensor::random(
-                [config.n_heads, config.d_state],
+                [config.n_heads, config.d_state / 2],
                 Distribution::Uniform(a_re_min, a_re_max),
                 device,
             ));
@@ -400,11 +402,16 @@ pub struct SsmBlock<B: Backend> {
     pub b_bias: Param<Tensor<B, 3>>,
     /// Bias term for C output projection: shape `[n_heads, mimo_rank, d_state]`
     pub c_bias: Param<Tensor<B, 3>>,
-    /// Real part of diagonal state transition matrix A: shape `[n_heads, d_state]`
-    /// Initialized uniformly in [-1.0, -0.1] to ensure damping (exponential decay)
+    /// Real part of diagonal state transition matrix A: shape `[n_heads, d_state/2]`
+    /// Initialized uniformly in [-1.0, -0.1] to ensure damping (exponential decay).
+    /// Only the first `d_state/2` components are independent; the matrix is block-diagonal
+    /// with 2×2 real-blocks representing the complex-valued dynamics, so the second half
+    /// reuses the same damping values as the first half via `cat([a_re, a_re], 1)`.
     pub a_re: Param<Tensor<B, 2>>,
-    /// Imaginary part of diagonal state transition matrix A: shape `[n_heads, d_state]`
+    /// Imaginary part of diagonal state transition matrix A: shape `[n_heads, d_state/2]`
     /// Initialized uniformly in [0, 2π] to enable complex rotation dynamics.
+    /// Only the first `d_state/2` components are independent; the full rotation matrix
+    /// is constructed on-the-fly via `cat([a_im, a_im], 1)` in `selective_scan`.
     /// Together with `theta` projection, this implements data-dependent RoPE (Mamba-3 Prop. 3).
     pub a_im: Param<Tensor<B, 2>>,
     /// Skip connection parameter D: shape `[d_inner]`
@@ -490,16 +497,18 @@ impl<B: Backend> SsmBlock<B> {
         //   while values near -0.1 allow slower exponential decay.
         //   During training, softplus(dt) * sigmoid(lambda) scaling means the
         //   effective decay rate is modulated by the input-dependent step size and gate.
+        //   Shape `[n_heads, d_state/2]` — the full damping matrix of size `[n_heads, d_state]`
+        //   is constructed on-the-fly by duplicating along dimension 1 (see `selective_scan`).
         // - a_im (imaginary part): initialized in [0, 2π] to enable oscillatory dynamics.
         //   This allows the model to capture periodic and quasi-periodic patterns
         //   in the state space, which is essential for modeling cyclical phenomena.
         let a_re = Tensor::random(
-            [n_heads, d_state],
+            [n_heads, d_state / 2],
             Distribution::Uniform(-1.0, -0.1),
             device,
         );
         let a_im = Tensor::random(
-            [n_heads, d_state],
+            [n_heads, d_state / 2],
             Distribution::Uniform(0.0, PI as f64 * 2.0),
             device,
         );
@@ -640,23 +649,24 @@ impl<B: Backend> SsmBlock<B> {
                 .unsqueeze_dim::<5>(0);
 
         let dt = delta.clone().unsqueeze_dim::<4>(3);
-        let da_re =
+        let da_re_half =
             (self.a_re.val().unsqueeze_dim::<3>(0).unsqueeze_dim::<4>(0) * dt.clone()).exp();
-        let da_im = self.a_im.val().unsqueeze_dim::<3>(0).unsqueeze_dim::<4>(0) * dt;
+        // Full damping (half → full via duplication): the complex rotation
+        // acts on d_state/2 independent 2×2 real blocks, each sharing the
+        // same damping magnitude exp(a_re · Δ).
+        let da_re = Tensor::cat(vec![da_re_half.clone(), da_re_half.clone()], 3);
+        let da_im_half = self.a_im.val().unsqueeze_dim::<3>(0).unsqueeze_dim::<4>(0) * dt;
 
         let theta_rot = theta.reshape([batch, seq_len, n_heads, d_state / 2]);
-        let angle = da_im.slice([0..batch, 0..seq_len, 0..n_heads, 0..d_state / 2]) + theta_rot;
+        let angle = da_im_half + theta_rot;
         let cos = angle.clone().cos().unsqueeze_dim::<5>(4);
         let sin = angle.sin().unsqueeze_dim::<5>(4);
 
-        let da_re_half = da_re
-            .clone()
-            .slice([0..batch, 0..seq_len, 0..n_heads, 0..d_state / 2])
-            .unsqueeze_dim::<5>(4);
-        let a00 = da_re_half.clone() * cos.clone();
-        let a01 = -(da_re_half.clone() * sin.clone());
-        let a10 = da_re_half.clone() * sin;
-        let a11 = da_re_half * cos;
+        let da_re_unsq = da_re_half.unsqueeze_dim::<5>(4);
+        let a00 = da_re_unsq.clone() * cos.clone();
+        let a01 = -(da_re_unsq.clone() * sin.clone());
+        let a10 = da_re_unsq.clone() * sin;
+        let a11 = da_re_unsq * cos;
 
         // Efficient batched matmul by flattening batch, seq, head
         let b_flat = b
@@ -673,7 +683,7 @@ impl<B: Backend> SsmBlock<B> {
         let delta_not_lambda = (delta * (Tensor::ones_like(&lambda) - lambda))
             .unsqueeze_dim::<4>(3)
             .unsqueeze_dim::<5>(4);
-        let beta = delta_not_lambda * da_re.unsqueeze_dim::<5>(4);
+        let beta = delta_not_lambda * da_re.clone().unsqueeze_dim::<5>(4);
 
         let mut bx_prev = bx.clone().slice([0..batch, 0..seq_len - 1]);
         bx_prev = Tensor::cat(
@@ -722,55 +732,65 @@ impl<B: Backend> SsmBlock<B> {
     /// where `Re = exp(a_re · Δ)` and the angle comes from `(a_im · Δ + θ)`.
     fn parallel_scan(
         &self,
-        mut a00: Tensor<B, 5>,
-        mut a01: Tensor<B, 5>,
-        mut a10: Tensor<B, 5>,
-        mut a11: Tensor<B, 5>,
-        mut w0: Tensor<B, 5>,
-        mut w1: Tensor<B, 5>,
+        a00: Tensor<B, 5>,
+        a01: Tensor<B, 5>,
+        a10: Tensor<B, 5>,
+        a11: Tensor<B, 5>,
+        w0: Tensor<B, 5>,
+        w1: Tensor<B, 5>,
     ) -> (Tensor<B, 5>, Tensor<B, 5>) {
         let [batch, seq_len, _n_heads, _dim4, _dim5] = a00.dims();
         let mut offset = 1;
 
+        // Rebind as mutable for the while loop.
+        // Tensor::clone() on Burn tensors is an Arc bump (O(1)), not a deep copy.
+        let (mut a00, mut a01, mut a10, mut a11) = (a00, a01, a10, a11);
+        let (mut w0, mut w1) = (w0, w1);
+
         while offset < seq_len {
             let num_pairs = seq_len - offset;
 
-            // Current states at position i (right)
-            let r_range = offset..seq_len;
-            let l_range = 0..num_pairs;
+            // ── Stage 1: clone for head slice (before consuming via left/right) ──
+            let h00 = a00.clone().slice([0..batch, 0..offset]);
+            let h01 = a01.clone().slice([0..batch, 0..offset]);
+            let h10 = a10.clone().slice([0..batch, 0..offset]);
+            let h11 = a11.clone().slice([0..batch, 0..offset]);
+            let hw0 = w0.clone().slice([0..batch, 0..offset]);
+            let hw1 = w1.clone().slice([0..batch, 0..offset]);
 
-            let r00 = a00.clone().slice([0..batch, r_range.clone()]);
-            let r01 = a01.clone().slice([0..batch, r_range.clone()]);
-            let r10 = a10.clone().slice([0..batch, r_range.clone()]);
-            let r11 = a11.clone().slice([0..batch, r_range.clone()]);
-            let rw0 = w0.clone().slice([0..batch, r_range.clone()]);
-            let rw1 = w1.clone().slice([0..batch, r_range.clone()]);
+            // ── Stage 2: right and left slices ────────────────────────────
+            let r00 = a00.clone().slice([0..batch, offset..seq_len]);
+            let r01 = a01.clone().slice([0..batch, offset..seq_len]);
+            let r10 = a10.clone().slice([0..batch, offset..seq_len]);
+            let r11 = a11.clone().slice([0..batch, offset..seq_len]);
+            let rw0 = w0.clone().slice([0..batch, offset..seq_len]);
+            let rw1 = w1.clone().slice([0..batch, offset..seq_len]);
 
-            // States at position i-offset (left)
-            let l00 = a00.clone().slice([0..batch, l_range.clone()]);
-            let l01 = a01.clone().slice([0..batch, l_range.clone()]);
-            let l10 = a10.clone().slice([0..batch, l_range.clone()]);
-            let l11 = a11.clone().slice([0..batch, l_range.clone()]);
-            let lw0 = w0.clone().slice([0..batch, l_range.clone()]);
-            let lw1 = w1.clone().slice([0..batch, l_range.clone()]);
+            let l00 = a00.slice([0..batch, 0..num_pairs]);
+            let l01 = a01.slice([0..batch, 0..num_pairs]);
+            let l10 = a10.slice([0..batch, 0..num_pairs]);
+            let l11 = a11.slice([0..batch, 0..num_pairs]);
+            let lw0 = w0.slice([0..batch, 0..num_pairs]);
+            let lw1 = w1.slice([0..batch, 0..num_pairs]);
 
-            // Compose matrix multiplications: (R_a * L_a) and (R_a * L_w + R_w)
+            // ── Stage 3: compose pairs ────────────────────────────────────
+            // A_new = A_right · A_left   (2×2 block matrix multiplication)
+            // w_new = A_right · w_left + w_right
+            // Tensor::clone() is O(1) (Arc bump), so we clone l-values used twice.
             let n00 = r00.clone() * l00.clone() + r01.clone() * l10.clone();
             let n01 = r00.clone() * l01.clone() + r01.clone() * l11.clone();
-            let n10 = r10.clone() * l00.clone() + r11.clone() * l10.clone();
-            let n11 = r10.clone() * l01.clone() + r11.clone() * l11.clone();
+            let n10 = r10.clone() * l00 + r11.clone() * l10;
+            let n11 = r10.clone() * l01 + r11.clone() * l11;
             let nw0 = r00 * lw0.clone() + r01 * lw1.clone() + rw0;
             let nw1 = r10 * lw0 + r11 * lw1 + rw1;
 
-            // In-place update of ranges to avoid heavy concatenation of the whole tensor at each step
-            // Burn tensors are immutable, but we update the binding.
-            // We only replace the part that was updated (from 'offset' onwards)
-            a00 = Tensor::cat(vec![a00.slice([0..batch, 0..offset]), n00], 1);
-            a01 = Tensor::cat(vec![a01.slice([0..batch, 0..offset]), n01], 1);
-            a10 = Tensor::cat(vec![a10.slice([0..batch, 0..offset]), n10], 1);
-            a11 = Tensor::cat(vec![a11.slice([0..batch, 0..offset]), n11], 1);
-            w0 = Tensor::cat(vec![w0.slice([0..batch, 0..offset]), nw0], 1);
-            w1 = Tensor::cat(vec![w1.slice([0..batch, 0..offset]), nw1], 1);
+            // ── Stage 4: write back ───────────────────────────────────────
+            a00 = Tensor::cat(vec![h00, n00], 1);
+            a01 = Tensor::cat(vec![h01, n01], 1);
+            a10 = Tensor::cat(vec![h10, n10], 1);
+            a11 = Tensor::cat(vec![h11, n11], 1);
+            w0 = Tensor::cat(vec![hw0, nw0], 1);
+            w1 = Tensor::cat(vec![hw1, nw1], 1);
 
             offset *= 2;
         }
@@ -848,11 +868,12 @@ impl<B: Backend> SsmBlock<B> {
         let la_t = lambda;
         let dt_u = dt_t.clone().unsqueeze_dim::<3>(2);
 
-        let da_re = (self.a_re.val().unsqueeze_dim::<3>(0) * dt_u.clone()).exp();
-        let da_im = self.a_im.val().unsqueeze_dim::<3>(0) * dt_u;
+        let da_re_half = (self.a_re.val().unsqueeze_dim::<3>(0) * dt_u.clone()).exp();
+        let da_re = Tensor::cat(vec![da_re_half.clone(), da_re_half], 2);
+        let da_im_half = self.a_im.val().unsqueeze_dim::<3>(0) * dt_u;
 
         let theta_rot = theta.reshape([batch, n_heads, d_state / 2]);
-        let angle = da_im.slice([0..batch, 0..n_heads, 0..d_state / 2]) + theta_rot;
+        let angle = da_im_half + theta_rot;
         let h_rot = self.rotate_state(prev_h, angle);
 
         let u_mimo = u_silu
@@ -878,8 +899,7 @@ impl<B: Backend> SsmBlock<B> {
             .unsqueeze_dim::<4>(3)
             * da_re.clone().unsqueeze_dim::<4>(3);
 
-        let da_re_half = da_re.clone().slice([0..batch, 0..n_heads, 0..d_state / 2]);
-        let da_re_for_h = Tensor::cat(vec![da_re_half.clone(), da_re_half], 2);
+        let da_re_for_h = da_re;
 
         let h_next = da_re_for_h.unsqueeze_dim::<4>(3) * h_rot
             + gamma_t * current_bx.clone()
