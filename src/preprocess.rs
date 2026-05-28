@@ -1,6 +1,6 @@
 //! Preprocessing utilities for embedding text data.
 //!
-//! This module provides the [`LogEmbedder`] struct (behind the `ort` feature flag)
+//! This module provides the \[`LogEmbedder`\] struct (behind the `ort` feature flag)
 //! for generating sentence-level embeddings using ONNX Runtime, and shared
 //! utility functions for projection normalization.
 

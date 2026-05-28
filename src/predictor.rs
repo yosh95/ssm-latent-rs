@@ -335,7 +335,7 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
     /// prevents exposure bias at the cost of an information bottleneck through
     /// low-dimensional observation space.
     ///
-    /// For a richer closed loop that avoids this bottleneck, see [`step_imagine_h`].
+    /// For a richer closed loop that avoids this bottleneck, see [`Self::step_imagine_h`].
     ///
     /// Returns `(prediction, y_next, next_state)`.
     pub fn step_imagine(
@@ -365,14 +365,14 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
 
     /// Imagination step using SSM hidden state `h` directly — no observation-space round-trip.
     ///
-    /// Unlike [`step_imagine`], this closes the loop entirely within the SSM's internal
+    /// Unlike [`Self::step_imagine`], this closes the loop entirely within the SSM's internal
     /// representation. The last layer's hidden state `h` (256 dims in default config)
     /// is flattened and projected to `d_model` via `h_proj`, fused with the encoded
     /// action, and fed back into the SSM. This eliminates the information bottleneck
     /// of `output_proj` (d_model → 2) followed by `obs_proj` (2 → d_model).
     ///
     /// For this to work without distribution shift, the model must be trained with
-    /// [`forward_with_h_sampling`] so it learns to process h-derived inputs during
+    /// [`Self::forward_with_h_sampling`] so it learns to process h-derived inputs during
     /// training, not just observation-derived inputs.
     ///
     /// Returns `(prediction, y_next, next_state)` where:
@@ -406,16 +406,16 @@ impl<B: Backend> MultiScaleMambaPredictor<B> {
 
     /// Full-sequence forward with h-derived input sampling for training.
     ///
-    /// This is the training counterpart to [`step_imagine_h`]. At each timestep t,
+    /// This is the training counterpart to [`Self::step_imagine_h`]. At each timestep t,
     /// with probability `h_sampling_prob`, the SSM input is derived from the
     /// previous step's hidden state `h_{t-1}` (via `h_proj`) instead of from the
     /// ground-truth observation `obs_t` (via `obs_proj`).
     ///
     /// This scheduled sampling strategy ensures the SSM learns to process its own
     /// h-derived inputs, eliminating the exposure bias that would otherwise cause
-    /// drift when [`step_imagine_h`] is used for open-loop imagination.
+    /// drift when [`Self::step_imagine_h`] is used for open-loop imagination.
     ///
-    /// When `h_sampling_prob = 0.0`, this is equivalent to [`forward_with_action`].
+    /// When `h_sampling_prob = 0.0`, this is equivalent to [`Self::forward_with_action`].
     /// Typical values: 0.2–0.5, annealing upward during training.
     ///
     /// # Note

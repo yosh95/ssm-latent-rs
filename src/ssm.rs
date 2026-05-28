@@ -383,7 +383,7 @@ pub struct SsmBlock<B: Backend> {
     /// Projects SiLU-activated input to step size (delta) per head: `d_inner` → `n_heads`
     pub dt_proj: Linear<B>,
     /// Projects SiLU-activated input to trapezoidal gate (lambda) per head: `d_inner` → `n_heads`
-    /// λ_t ∈ [0,1] controls the convex combination in exponential-trapezoidal discretization:
+    /// λ_t ∈ \[0,1\] controls the convex combination in exponential-trapezoidal discretization:
     /// λ_t=1 → exponential-Euler (Mamba-2), λ_t=0.5 → classical trapezoidal, learned → Mamba-3
     pub lambda_proj: Linear<B>,
     /// Projects SiLU-activated input to rotation angles (theta) per head: `d_inner` → `n_heads * (d_state/2)`
