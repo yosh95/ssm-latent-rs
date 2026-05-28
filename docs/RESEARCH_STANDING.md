@@ -81,6 +81,7 @@ This is arguably LeCun's last paper at Meta FAIR before leaving to found AMI Lab
   indicators (Ruiz-Morales et al., Nov 2025).
 - **Implicit bias in deep linear nets**: JEPA prioritizes high-influence features
   vs. MAE's variance preference (Littwin et al., Apple, ICML 2026).
+- **LeJEPA Identifiability (Klindt, LeCun, Balestriero, May 2026)**: Proves that LeJEPA (alignment + Gaussian regularization) linearly recovers the world's latent variables up to rotation if and only if those latents are Gaussian. Establishes linear identifiability, its Gaussian uniqueness, an approximate bound, and optimal latent-space planning. All theorems formally verified in Lean 4.
 - **Variational JEPA (VJEPA)**: predictor outputs distributions; formal guarantees
   for POMDP optimal control (Huang, Jan 2026).
 
@@ -249,6 +250,7 @@ sigreg_freqs = [0.5, 1.0, 1.5, 2.0]
 | VL-JEPA: Joint Embedding Predictive Architecture for Vision-Language | `2512.10942` | Dec 2025 |
 | LLM-JEPA: Large Language Models Meet JEPA | `2509.14252` | Sep 2025 |
 | Causal-JEPA: Learning World Models through Object-Level Latent Interventions | `2602.11389` | Feb 2026 |
+| When Does LeJEPA Learn a World Model? (Identifiability) | `2605.26379` | May 2026 |
 | Temporal Straightening for Latent Planning | Wang et al. | 2026 |
 | Mamba-3: Improved Sequence Modeling using State Space Principles | Lahoti et al. | 2026 |
 | A Path Towards Autonomous Machine Intelligence | LeCun | 2022 |

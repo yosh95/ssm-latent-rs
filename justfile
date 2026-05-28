@@ -20,6 +20,10 @@ default: list
 @clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# Run clippy with auto-fix (allow dirty working tree)
+@clippy-fix:
+    cargo clippy --workspace --all-targets --all-features --fix --allow-dirty -- -D warnings
+
 # Run all tests
 @test:
     cargo test --workspace --all-targets --all-features

@@ -20,3 +20,18 @@ keywords:
   - burn
   - latent-prediction
   - sigreg
+
+references:
+  - type: article
+    authors:
+      - given-names: David
+        family-names: Klindt
+      - given-names: Yann
+        family-names: LeCun
+      - given-names: Randall
+        family-names: Balestriero
+    title: "When Does LeJEPA Learn a World Model?"
+    year: 2026
+    journal: "arXiv preprint arXiv:2605.26379"
+    doi: 10.48550/arXiv.2605.26379
+    url: "https://arxiv.org/abs/2605.26379"

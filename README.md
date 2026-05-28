@@ -90,7 +90,7 @@ flowchart TB
 | **Latent Space z** | Compact world state | Learned embedding, not raw pixels |
 | **Multi-Scale SSM** | Physics dynamics engine | 3 layers: fast (motors) / medium (trajectory) / slow (environment) |
 | **Temporal Straightening** | Action planning | Curvature loss → locally linear latent paths |
-| **SIGReg** | Representation stability | Provable collapse prevention (Balestriero & LeCun) |
+| **SIGReg** | Representation stability | Provable collapse prevention (LeJEPA); linear identifiability guarantee (Klindt et al. 2026) |
 | **Decoder** | Observation reconstruction | Reconstruct for auxiliary loss only |
 
 ---
@@ -219,7 +219,7 @@ cargo run -p circle-world-demo --release
 | **Step** | Single & multi-step | Streaming inference correctness |
 | **Vision** | Encoder/Decoder round-trip | Multimodal (camera + sensor) pipeline integrity |
 | **Gradient** | All SSM parameters | Trainability of complex-valued, MIMO, and conv params |
-| **SIGReg** | Collapse prevention | **Provable** representation stability (LeJEPA) |
+| **SIGReg** | Collapse prevention | **Provable** representation stability (LeJEPA); linear identifiability (Klindt et al. 2026) |
 | **LeJEPA** | Combined loss | Finite, non-negative, well-behaved optimization |
 
 ```bash
@@ -262,6 +262,7 @@ cargo test --all-targets --all-features
 ## 📚 References
 
 - Balestriero, R., & LeCun, Y. (2025). **LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics**. *arXiv:2511.08544*.
+- Klindt, D., LeCun, Y., & Balestriero, R. (2026). **When Does LeJEPA Learn a World Model?**. *arXiv:2605.26379*. [Provably shows LeJEPA linearly recovers world latents iff they are Gaussian; formal verification in Lean 4]
 - Lahoti, A., et al. (2026). **Mamba-3: Improved Sequence Modeling using State Space Principles**. *ICLR 2026*.
 - Maes, L., et al. (2026). **LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels**.
 - Wang, Y., Bounou, O., Zhou, G., Balestriero, R., Rudner, T.G., LeCun, Y., & Ren, M. (2026). **Temporal Straightening for Latent Planning**.
