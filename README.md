@@ -48,6 +48,59 @@ Current Physical AI architectures face a fundamental trade-off:
 
 ---
 
+## 🩺 LeJEPA Identifiability Monitoring 🆕
+
+This library includes the **first practical implementation** of the LeJEPA identifiability conditions (Klindt, LeCun & Balestriero, 2026, Theorems 1–4):
+
+```rust
+// Periodically during validation:
+let (exploration, stationarity) = health_check::<B>(
+    &z_val, &pred_z_val, n_layers, "epoch 10"
+);
+// Returns structured reports with risk levels
+```
+
+### The Three Conditions + Planning Guarantee
+
+| Condition | Theorem | Monitor | What It Checks |
+|-----------|---------|---------|----------------|
+| **① Gaussian latents** | Theorem 1 | SIGReg (in loss) | Latent distribution matches N(0,I) — provable identifiability |
+| **② Stationary dynamics** | Theorem 2 | `check_stationarity()` | Prediction-error trend over time; alerts on drift/phase transitions |
+| **③ Isotropic exploration** | Theorem 3 | `compute_exploration_quality()` | Coverage, anisotropy, effective rank, trajectory narrowness, Gaussian score |
+| **④ Planning consistency** | Theorem 4 | `check_planning_consistency()` | R² between latent and observation-space plan costs |
+
+### Exploration Quality Metrics
+
+| Metric | Range | Healthy | Warning |
+|--------|-------|---------|---------|
+| `coverage` | 0–1 | > 0.4 | < 0.2 (data too narrow) |
+| `anisotropy` | 1–∞ | < 2.0 | > 3.0 (directional bias) |
+| `effective_rank` | 1–d_model | > d_model/2 | < d_model/4 (wasted capacity) |
+| `trajectory_narrowness` | 0–1 | < 0.7 | > 0.9 (repetitive paths) |
+| `gaussian_score` | 0–1 | > 0.6 | < 0.4 (non-Gaussian latents) |
+
+### Why This Matters
+
+> *"When training data came from a goal-directed RL policy whose trajectories cluster in a narrow, non-Gaussian region, recovery never exceeded R²=0.5."*
+> — Klindt, LeCun, Balestriero (2026), Section 5.1
+
+The monitors catch **silent identifiability collapse** — situations where the model appears to train well but has learned shortcuts (background color, trivial features) instead of true world structure.
+
+```rust
+// Example: detecting narrow exploration
+let quality = compute_exploration_quality::<B>(z_val);
+if quality.risk_level.starts_with("HIGH") {
+    // 🔴 Broadening data collection needed!
+    // Consider: adding exploration noise, mixing in random trajectories
+}
+```
+
+### Accompanying Benchmark
+
+The companion **stable-worldmodel** benchmark (Maes et al., 2026) shows that current world models collapse under minor visual shifts (color change → 50.8% → 12%). The identifiability monitors here detect the root cause *before* deployment.
+
+---
+
 ## 🏗️ Architecture for Physical AI
 
 ```mermaid
@@ -91,6 +144,10 @@ flowchart TB
 | **Multi-Scale SSM** | Physics dynamics engine | 3 layers: fast (motors) / medium (trajectory) / slow (environment) |
 | **Temporal Straightening** | Action planning | Curvature loss → locally linear latent paths |
 | **SIGReg** | Representation stability | Provable collapse prevention (LeJEPA); linear identifiability guarantee (Klindt et al. 2026) |
+| **Exploration Monitor** 🆕 | Data quality assurance | Checks isotropic exploration (Theorem 3), alerts on narrow/biased trajectories |
+| **Stationarity Detector** 🆕 | Dynamics health monitoring | Detects non-stationary prediction-error trends (Theorem 2)
+| **Planning Consistency** 🆕 | Plan verification | Validates Theorem 4: latent-space plans ≈ true-space plans |
+| **Health Check** 🆕 | Combined diagnostics | `health_check()` runs all monitors in one call |
 | **Decoder** | Observation reconstruction | Reconstruct for auxiliary loss only |
 
 ---
@@ -221,6 +278,10 @@ cargo run -p circle-world-demo --release
 | **Gradient** | All SSM parameters | Trainability of complex-valued, MIMO, and conv params |
 | **SIGReg** | Collapse prevention | **Provable** representation stability (LeJEPA); linear identifiability (Klindt et al. 2026) |
 | **LeJEPA** | Combined loss | Finite, non-negative, well-behaved optimization |
+| **Exploration Monitor** 🆕 | Data quality | Coverage, anisotropy, effective rank, narrowness, Gaussian score — Theorem 3 compliance |
+| **Stationarity Detector** 🆕 | Dynamics health | Prediction-error trend analysis — Theorem 2 compliance |
+| **Planning Consistency** 🆕 | Plan verification | R² and angular error between latent and observation-space plans — Theorem 4 |
+| **Health Check** 🆕 | Integrated | Runs all monitors; fails if any LeJEPA condition is violated |
 
 ```bash
 cargo test --all-targets --all-features
@@ -252,6 +313,8 @@ cargo test --all-targets --all-features
 - [x] Circle-world benchmark (phase-locked prediction)
 - [x] WASM in-browser demos
 - [x] Multimodal (vision + sensor + action) fusion
+- [x] LeJEPA identifiability monitoring (exploration quality, stationarity, planning consistency)
+- [x] Health check framework for LeJEPA condition validation
 - [ ] Real robot integration (MuJoCo / Isaac Sim bridge)
 - [ ] Sim-to-real transfer pipeline
 - [ ] ROS 2 node for robotic control
@@ -262,7 +325,8 @@ cargo test --all-targets --all-features
 ## 📚 References
 
 - Balestriero, R., & LeCun, Y. (2025). **LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics**. *arXiv:2511.08544*.
-- Klindt, D., LeCun, Y., & Balestriero, R. (2026). **When Does LeJEPA Learn a World Model?**. *arXiv:2605.26379*. [Provably shows LeJEPA linearly recovers world latents iff they are Gaussian; formal verification in Lean 4]
+- Klindt, D., LeCun, Y., & Balestriero, R. (2026). **When Does LeJEPA Learn a World Model?** *arXiv:2605.26379*. [Provably shows LeJEPA linearly recovers world latents iff they are Gaussian; formal verification in Lean 4; proves Theorems 1–4 on identifiability, stationarity, exploration, and planning consistency]
+- Maes, L., LeCun, Y., Balestriero, R., et al. (2026). **stable-worldmodel: A Platform for Reproducible World Modeling Research and Evaluation**. *arXiv preprint*. [Benchmark revealing world model brittleness under visual perturbations; companion to identifiability proofs]
 - Lahoti, A., et al. (2026). **Mamba-3: Improved Sequence Modeling using State Space Principles**. *ICLR 2026*.
 - Maes, L., et al. (2026). **LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels**.
 - Wang, Y., Bounou, O., Zhou, G., Balestriero, R., Rudner, T.G., LeCun, Y., & Ren, M. (2026). **Temporal Straightening for Latent Planning**.

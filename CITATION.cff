@@ -35,3 +35,15 @@ references:
     journal: "arXiv preprint arXiv:2605.26379"
     doi: 10.48550/arXiv.2605.26379
     url: "https://arxiv.org/abs/2605.26379"
+  - type: article
+    authors:
+      - given-names: Lucas
+        family-names: Maes
+      - given-names: Yann
+        family-names: LeCun
+      - given-names: Randall
+        family-names: Balestriero
+    title: "stable-worldmodel: A Platform for Reproducible World Modeling Research and Evaluation"
+    year: 2026
+    journal: "arXiv preprint"
+    doi: 10.48550/arXiv.2605.XXXXX
