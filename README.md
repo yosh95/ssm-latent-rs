@@ -275,8 +275,8 @@ The Reptile meta-learner was trained for 30 iterations on a **CircleWorld** dist
 
 **Key findings:**
 - ✅ **Perfect generalization**: 100% success rate on all holdout tasks
-- 📌 **AUC注記**: 表中のAUCは**適応AUC**（損失-ステップ曲線下面積）です。
-  **小さいほど適応が速い**ことを意味します（分類のROC-AUCとは逆の解釈）。
+- 📌 **AUC note**: AUC here is **Adaptation AUC** (area under the loss-vs-steps curve).
+  **Smaller = faster adaptation** (opposite interpretation from ROC-AUC).
 - ✅ **Ultra-fast adaptation**: 1–3 gradient steps to master completely new dynamics
 - ✅ **Extrapolation**: Works on angular velocities **outside** the training range (0.3 and 2.5)
 - ✅ **Robust**: Tolerates **2.5× training noise** and arbitrary phase shifts
