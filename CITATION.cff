@@ -47,3 +47,18 @@ references:
     year: 2026
     journal: "arXiv preprint"
     doi: 10.48550/arXiv.2605.XXXXX
+
+reference:
+  - type: article
+    authors:
+      - family-names: Goldfeder
+        given-names: Judah
+      - family-names: Wyder
+        given-names: Philippe
+      - family-names: LeCun
+        given-names: Yann
+      - family-names: Shwartz-Ziv
+        given-names: Ravid
+    title: "AI Must Embrace Specialization via Superhuman Adaptable Intelligence"
+    journal: arXiv:2602.23643v1
+    year: 2026

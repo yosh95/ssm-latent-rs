@@ -400,7 +400,7 @@ impl<B: Backend> LatentPredictor<B> {
 /// Shared loss computation used by both [`LatentPredictor`] and [`MultiScaleLatentPredictor`].
 ///
 /// See [`LatentPredictor::loss`] for the full formula.
-fn latent_loss<B: Backend>(args: LatentLossArgs<B>, projections: Tensor<B, 2>) -> Tensor<B, 1> {
+pub fn latent_loss<B: Backend>(args: LatentLossArgs<B>, projections: Tensor<B, 2>) -> Tensor<B, 1> {
     let [batch, seq_len, _] = args.z.dims();
     let target_z = args.z.clone().detach().slice([0..batch, 1..seq_len]);
     let pred_slice = args.pred_z.clone().slice([0..batch, 0..seq_len - 1]);

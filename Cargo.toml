@@ -3,6 +3,7 @@ members = [
     "circle-world-demo",
     "game-playing-wasm",
     "tiny-stories-jepa-demo",
+    "meta-demo",
 ]
 
 [package]
