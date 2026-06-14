@@ -13,7 +13,8 @@ use burn::backend::Autodiff;
 use burn::backend::NdArray;
 use ssm_latent_model::latent::MultiScaleLatentPredictor;
 use ssm_latent_model::meta::{
-    CircleWorldDistribution, CircleWorldTask, DistributionInfo, MetaPipelineConfig, run_meta_pipeline,
+    CircleWorldDistribution, CircleWorldTask, DistributionInfo, MetaPipelineConfig,
+    run_meta_pipeline,
 };
 use ssm_latent_model::ssm::MultiScaleSsmConfig;
 
@@ -26,7 +27,7 @@ fn main() {
     println!("║   SAI: Superhuman Adaptable Intelligence Meta-Demo       ║");
     println!("║   Goldfeder, Wyder, LeCun & Shwartz-Ziv (2026)           ║");
     println!("╚══════════════════════════════════════════════════════════╝");
-    println!("");
+    println!();
 
     // ── Step 1: Create the world model ──
     println!("=== Step 1: Creating World Model ===");
@@ -44,7 +45,7 @@ fn main() {
         "  Model: d_model={}, layers={}, params=~{}",
         ssm_config.d_model, ssm_config.n_layers, 32000
     );
-    println!("");
+    println!();
 
     // ── Step 2: Define task distributions ──
     println!("=== Step 2: Defining Task Distributions ===");
@@ -88,12 +89,12 @@ fn main() {
         }),
     ];
     println!("  Eval tasks: {} holdout tasks", eval_tasks.len());
-    println!("");
+    println!();
 
     // ── Step 3: Run meta-training ──
     println!("=== Step 3: Meta-Training (Reptile) ===");
     println!("  Training for 30 iterations...");
-    println!("");
+    println!();
 
     let pipeline_cfg = MetaPipelineConfig {
         num_iterations: 30,
@@ -103,17 +104,12 @@ fn main() {
         max_eval_steps: 20,
     };
 
-    let (_meta_learner, train_metrics, eval_reports) = run_meta_pipeline::<Backend>(
-        model,
-        train_dist,
-        eval_tasks,
-        pipeline_cfg,
-        device.clone(),
-    );
+    let (_meta_learner, train_metrics, eval_reports) =
+        run_meta_pipeline::<Backend>(model, train_dist, eval_tasks, pipeline_cfg, device);
 
-    println!("");
+    println!();
     println!("=== Step 4: Results Summary ===");
-    println!("");
+    println!();
 
     if let Some(last) = train_metrics.last() {
         println!("  Final meta-train metrics:");
@@ -126,7 +122,7 @@ fn main() {
         );
     }
 
-    println!("");
+    println!();
     println!("  Holdout task evaluation:");
     for (i, report) in eval_reports.iter().enumerate() {
         println!(
@@ -138,7 +134,7 @@ fn main() {
         );
     }
 
-    println!("");
+    println!();
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║   Meta-learning complete!                              ║");
     println!("║   The model is now optimized for adaptation speed.     ║");
