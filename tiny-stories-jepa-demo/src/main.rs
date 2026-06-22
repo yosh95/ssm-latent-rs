@@ -2,7 +2,7 @@ mod data;
 mod model;
 mod training;
 
-use crate::data::{ByteLevelTokenizer, download_tiny_stories, prepare_dataset};
+use crate::data::{download_tiny_stories, prepare_dataset, ByteLevelTokenizer};
 use crate::model::JepaLanguageModel;
 use crate::training::{train, ModelConfig, TrainingConfig};
 use burn::backend::Wgpu;
@@ -49,7 +49,9 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Download dataset ────────────────────────────────────
     println!("\n[2/4] Loading TinyStories dataset...");
-    let cache_path = Path::new(manifest_dir).join("data").join("TinyStoriesV2-GPT4-train.txt");
+    let cache_path = Path::new(manifest_dir)
+        .join("data")
+        .join("TinyStoriesV2-GPT4-train.txt");
     let full_text = download_tiny_stories(&cache_path)?;
 
     let dataset = prepare_dataset(
@@ -99,11 +101,15 @@ async fn main() -> anyhow::Result<()> {
     print!("{}", prompt);
 
     let mut current_ids: Vec<u32> = tokenizer.encode(prompt);
-    
+
     for _ in 0..40 {
         let seq_len = current_ids.len();
         let input_tensor = Tensor::<Backend, 1, Int>::from_ints(
-            current_ids.iter().map(|&x| x as i32).collect::<Vec<i32>>().as_slice(),
+            current_ids
+                .iter()
+                .map(|&x| x as i32)
+                .collect::<Vec<i32>>()
+                .as_slice(),
             &device,
         )
         .reshape([1, seq_len]);

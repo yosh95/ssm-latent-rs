@@ -2,8 +2,8 @@ use burn::module::Module;
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig};
 use burn::tensor::backend::Backend;
 use burn::tensor::{Distribution, Int, Tensor};
-use ssm_latent_model::ssm::{SsmBlock, SsmConfig};
 use ssm_latent_model::preprocess::normalize_projections;
+use ssm_latent_model::ssm::{SsmBlock, SsmConfig};
 
 /// JEPA-style Language Model using SSM dynamics in latent space.
 ///
@@ -115,27 +115,30 @@ impl<B: Backend> JepaLanguageModel<B> {
     /// The caller can then compute:
     /// - JEPA loss from `(z, pred_z)`: `lejepa_loss(z, pred_z, projections, weight, freqs)`
     /// - Generation loss from `(logits, targets)`: `cross_entropy(logits, targets)`
-    pub fn forward(&self, input_ids: Tensor<B, 2, Int>) -> (Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>) {
+    pub fn forward(
+        &self,
+        input_ids: Tensor<B, 2, Int>,
+    ) -> (Tensor<B, 3>, Tensor<B, 3>, Tensor<B, 3>) {
         // [batch, seq_len] → [batch, seq_len, d_model]
         let x = self.embedding.forward(input_ids);
-        
+
         // Encode to latent space: embedding → z
         // This is the "joint embedding" step — observations become latents
         let z = self.encoder.forward(x);
-        
+
         // SSM dynamics: predict z' from z
         // This is the "predictive" step — latents predict future latents
         let mut pred_z = z.clone();
         for ssm in &self.ssm_layers {
             pred_z = ssm.forward(pred_z);
         }
-        
+
         // Decode: z' → logits (for generation)
         // The decoder is an auxiliary path — it allows the model to generate
         // text, but the SSM learns entirely in latent space.
         let decoded = self.decoder.forward(pred_z.clone());
         let logits = self.output_head.forward(decoded);
-        
+
         (z, pred_z, logits)
     }
 

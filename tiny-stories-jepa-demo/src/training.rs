@@ -175,12 +175,8 @@ pub fn train<B: AutodiffBackend>(
     vocab_size: usize,
     dataset: Vec<(String, Vec<u32>)>,
 ) -> JepaLanguageModel<B> {
-    let ssm_config = config
-        .model_config
-        .expect("Model config (SSM) must be set");
-    let jepa_config = config
-        .jepa_config
-        .unwrap_or_default();
+    let ssm_config = config.model_config.expect("Model config (SSM) must be set");
+    let jepa_config = config.jepa_config.unwrap_or_default();
 
     let n_projections = jepa_config.n_projections;
     let sigreg_weight = jepa_config.sigreg_weight;
@@ -196,14 +192,25 @@ pub fn train<B: AutodiffBackend>(
 
     println!("\n========= JEPA Language Model Training =========");
     println!("  Architecture: Embed → Encoder → SSM(×2) → Decoder → Head");
-    println!("  d_model={}, d_state={}, n_heads={}", 
-        ssm_config.d_model, ssm_config.d_state, ssm_config.n_heads);
-    println!("  JEPA: sigreg_weight={}, gen_weight={}, n_projections={}",
-        sigreg_weight, gen_weight, n_projections);
+    println!(
+        "  d_model={}, d_state={}, n_heads={}",
+        ssm_config.d_model, ssm_config.d_state, ssm_config.n_heads
+    );
+    println!(
+        "  JEPA: sigreg_weight={}, gen_weight={}, n_projections={}",
+        sigreg_weight, gen_weight, n_projections
+    );
     println!("  CF freqs: {:?}", cf_freqs);
     println!("  Optimizer: Adam, lr={}", config.learning_rate);
-    println!("  Vocab: o200k_base (byte-level BPE, {} tokens)", vocab_size);
-    println!("  Dataset: {} samples, max_seq_len={}", dataset.len(), max_seq_len);
+    println!(
+        "  Vocab: o200k_base (byte-level BPE, {} tokens)",
+        vocab_size
+    );
+    println!(
+        "  Dataset: {} samples, max_seq_len={}",
+        dataset.len(),
+        max_seq_len
+    );
     println!("================================================\n");
 
     for epoch in 1..=config.num_epochs {
@@ -235,8 +242,7 @@ pub fn train<B: AutodiffBackend>(
             let jepa_loss = lejepa_loss(z, pred_z, projections, sigreg_weight, &cf_freqs);
 
             // --- Combined loss ---
-            let loss = gen_loss.clone().mul_scalar(gen_weight) 
-                     + jepa_loss.clone();
+            let loss = gen_loss.clone().mul_scalar(gen_weight) + jepa_loss.clone();
 
             let loss_val: f64 = loss.clone().into_scalar().to_f64();
             let gen_val: f64 = gen_loss.into_scalar().to_f64();

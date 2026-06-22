@@ -23,8 +23,8 @@ impl ByteLevelTokenizer {
     /// `o200k_base` is the encoding used by GPT-4o, o1, o3, and o4-mini.
     /// It is a byte-level BPE with ~200K tokens, supporting any UTF-8 text.
     pub fn new() -> Self {
-        let enc = tiktoken::get_encoding("o200k_base")
-            .expect("o200k_base encoding must be available");
+        let enc =
+            tiktoken::get_encoding("o200k_base").expect("o200k_base encoding must be available");
         Self { enc }
     }
 
@@ -44,7 +44,6 @@ impl ByteLevelTokenizer {
     pub fn vocab_size(&self) -> usize {
         200000
     }
-
 }
 
 /// Download TinyStories dataset from HuggingFace datasets via direct URL.
