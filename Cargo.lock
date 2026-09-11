@@ -5103,9 +5103,9 @@ dependencies = [
 
 [[package]]
 name = "stable-vec"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dac7bc0f7d0d44329b200020effbc25a534d89fa142af95e3ddf76113412a5e"
+checksum = "047720fbc1c4cc7daa75c925adba9ce3fa8e1f7b039337c281b142d4ecc6d86b"
 
 [[package]]
 name = "stable_deref_trait"
